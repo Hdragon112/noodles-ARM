@@ -1,669 +1,7 @@
-<style>
-@font-face {
-    font-family: 'Twemoji Mozilla';
-    src: url('/luci-static/resources/openclash/fonts/TwemojiMozilla-flags-B12sb_Bp.woff2') format('woff2');
-}
-.oc[data-darkmode="true"] .config-editor-model .CodeMirror {
-    background: var(--bg-white);
-    color: var(--text-primary);
-}
-.oc[data-darkmode="true"] .config-editor-model .CodeMirror-gutters {
-    background: var(--bg-gray);
-    border-right: 1px solid var(--border-light);
-}
-.oc[data-darkmode="true"] .config-editor-model .CodeMirror-linenumber {
-    color: var(--text-secondary);
-}
-.oc[data-darkmode="true"] .config-editor-model .CodeMirror-scrollbar-filler,
-.oc[data-darkmode="true"] .config-editor-model .CodeMirror-gutter-filler {
-    background: var(--bg-gray);
-}
-.oc[data-darkmode="true"] #config-mode-tabs .mode-tab {
-    color: var(--text-secondary);
-}
-.oc[data-darkmode="true"] #config-mode-tabs .mode-tab:hover {
-    color: var(--text-primary);
-    background: rgba(96, 165, 250, 0.1);
-}
-.oc[data-darkmode="true"] #config-mode-tabs .mode-tab.active {
-    background: var(--primary-color);
-    color: white;
-}
-.oc[data-darkmode="true"] #config-mergeview-container .CodeMirror-merge-gap {
-    background: var(--text-secondary) !important;
-}
-.oc[data-darkmode="true"] .oc .config-editor-content {
-    border-bottom: 1px solid var(--border-light);
-    border-top: 1px solid var(--border-light);
-}
-.oc[data-darkmode="true"] .overwrite-banner {
-    background: rgba(255,80,80,0.18);
-}
-.oc[data-darkmode="true"] .overwrite-banner svg {
-    stroke: var(--error-color);
-}
-.oc[data-darkmode="true"] .overwrite-banner svg circle {
-    stroke: var(--error-color);
-    fill: rgba(255,80,80,0.18);
-}
-
-.oc .config-editor-model-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 5;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    backdrop-filter: blur(2px);
-}
-.oc .config-editor-model-overlay.show {
-    display: flex;
-}
-.oc .config-editor-model {
-    background: var(--bg-white);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-md);
-    width: 90vw;
-    height: 85vh;
-    max-width: 1200px;
-    min-width: 600px;
-    min-height: 400px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    border: 1px solid var(--border-light);
-    position: relative;
-    transition: all 0.3s ease;
-}
-.oc .config-editor-model.maximized {
-    width: 98vw !important;
-    height: 95vh !important;
-    max-width: none !important;
-}
-.oc .config-editor-model.minimized {
-    width: 70vw !important;
-    height: 70vh !important;
-}
-.oc .config-editor-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--border-light);
-    background: var(--bg-gray);
-    flex-shrink: 0;
-    cursor: move;
-    user-select: none;
-    min-width: 0;
-}
-.oc .config-editor-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text-primary);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1 1 auto;
-}
-.oc .config-editor-title #editTitle,
-.oc .config-editor-title #config-file-name {
-    user-select: text;
-    -webkit-user-select: text;
-    cursor: text;
-}
-.oc .config-editor-title .config-file-name {
-    color: var(--primary-color);
-    font-weight: 700;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    display: inline-block;
-    vertical-align: bottom;
-    padding: 0;
-}
-.oc .config-editor-actions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-.oc .size-btn {
-    width: 24px !important;
-    height: 24px !important;
-    min-width: 24px !important;
-    padding: 0 !important;
-}
-.oc .size-btn svg {
-    width: 12px !important;
-    height: 12px !important;
-}
-#config-mergeview-container {
-    width: 100%;
-    height: 100%;
-    display: block;
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: var(--bg-white);
-    z-index: 2;
-}
-.oc .config-editor-content {
-    flex: 1;
-    position: relative;
-    overflow: hidden;
-    border-bottom: 1px solid var(--border-light);
-    border-top: 1px solid var(--border-light);
-}
-.oc .config-editor-loading {
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    background: var(--bg-white);
-    color: var(--text-secondary);
-    font-size: 14px;
-}
-.oc .loading-spinner {
-    width: 24px;
-    height: 24px;
-    border: 2px solid var(--border-light);
-    border-top-color: var(--primary-color);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-.oc .config-editor-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 20px;
-    background: var(--bg-gray);
-    flex-shrink: 0;
-    position: relative;
-}
-.oc .config-editor-status {
-    font-size: 12px;
-    color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 50%;
-}
-.oc .config-editor-help {
-    font-size: 11px;
-    color: var(--text-secondary);
-    opacity: 0.8;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 50%;
-}
-.oc .config-editor-resize-handle {
-    position: absolute;
-    bottom: 0; right: 0;
-    width: 20px; height: 20px;
-    cursor: nw-resize;
-    background: linear-gradient(-45deg, 
-        transparent 0%, 
-        transparent 40%, 
-        var(--border-color) 40%, 
-        var(--border-color) 45%, 
-        transparent 45%, 
-        transparent 50%, 
-        var(--border-color) 50%, 
-        var(--border-color) 55%, 
-        transparent 55%, 
-        transparent 60%, 
-        var(--border-color) 60%, 
-        var(--border-color) 65%, 
-        transparent 65%);
-}
-.oc #config-editor-textarea {
-    width: 100%;
-    height: 100%;
-    border: none;
-    outline: none;
-    resize: none;
-    font-size: 14px;
-    line-height: 1.5;
-    padding: 12px;
-    background: var(--bg-white);
-    color: var(--text-primary);
-}
-.oc .config-editor-model .CodeMirror {
-    height: 100%;
-    font-size: 14px;
-    line-height: 1.5;
-}
-.oc #config-mode-tabs {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    padding: 8px;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-    border-radius: var(--radius-md);
-}
-.oc #config-mode-tabs .mode-tabs {
-    display: flex;
-    width: 100%;
-    background: var(--bg-gray);
-    border-radius: var(--radius-md);
-    padding: 4px;
-    gap: 4px;
-    margin: 0 auto;
-}
-.oc #config-mode-tabs .mode-tab {
-    flex: 1 1 0;
-    min-width: 0;
-    width: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 12px 0;
-    border: none;
-    border-radius: calc(var(--radius-md) - 2px);
-    background: transparent;
-    color: var(--text-secondary);
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-    box-sizing: border-box;
-}
-.oc #config-mode-tabs .mode-tab:hover {
-    color: var(--text-primary);
-    background: rgba(59, 130, 246, 0.1);
-}
-.oc #config-mode-tabs .mode-tab.active {
-    background: var(--primary-color);
-    color: white;
-    box-shadow: var(--shadow-sm);
-}
-.overwrite-banner {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 20px;
-    background: rgba(255,80,80,0.12);
-    font-size: 14px;
-    text-align: center;
-}
-.overwrite-banner svg {
-    flex-shrink: 0;
-    display: block;
-}
-.overwrite-banner span {
-    flex: unset;
-    text-align: center;
-    display: inline-block;
-    color: var(--error-color);
-    line-height: 1.5;
-    vertical-align: middle;
-}
-.oc .config-editor-model .CodeMirror.zoom-75 { font-size: 10.5px; }
-.oc .config-editor-model .CodeMirror.zoom-90 { font-size: 12.6px; }
-.oc .config-editor-model .CodeMirror.zoom-110 { font-size: 15.4px; }
-.oc .config-editor-model .CodeMirror.zoom-125 { font-size: 17.5px; }
-.oc .config-editor-model .CodeMirror.zoom-150 { font-size: 21px; }
-.oc .config-editor-model .CodeMirror.zoom-200 { font-size: 28px; }
-.oc .config-editor-model .CodeMirror, .oc .config-editor-model .CodeMirror-line {
-	font-family: 'Twemoji Mozilla', "Microsoft Yahei", "sans-serif", "Helvetica Neue", "Helvetica", "Hiragino Sans GB" !important;
-}
-.oc .config-editor-model .CodeMirror-hints.log {
-    font-family: 'Twemoji Mozilla', "Open Sans", "PingFangSC-Regular", "Microsoft Yahei", "WenQuanYi Micro Hei", "Helvetica Neue", "Helvetica", "Hiragino Sans GB", "sans-serif" !important;
-}
-#config-mergeview-container .CodeMirror-merge,
-#config-mergeview-container .CodeMirror-merge-pane,
-#config-mergeview-container .CodeMirror,
-#config-mergeview-container .CodeMirror-scroll {
-    height: 100% !important;
-    min-height: 0 !important;
-    box-sizing: border-box;
-}
-#config-mergeview-container .CodeMirror-merge-gap {
-    height: 100% !important;
-    min-height: 0 !important;
-}
-#config-mergeview-container .CodeMirror-scroll {
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-}
-#config-mergeview-container .CodeMirror-merge-pane {
-    overflow: hidden;
-}
-#config-mergeview-container .CodeMirror-merge-r-chunk {
-    background: #0095ff2e !important;
-}
-#config-mergeview-container .CodeMirror-merge-r-connect {
-    fill: #0095ff2e !important;
-    stroke: #0095ff2e !important;
-}
-#config-mergeview-container  .CodeMirror-merge {
-    border: none !important;
-}
-.oc .update-row {
-    display: flex;
-    gap: 12px;
-    width: 100%;
-    max-width: 100%;
-}
-.oc .update-row > .form-select-wrapper {
-    flex: 1 1 0;
-    min-width: 0;
-}
-.oc .update-row .form-select {
-    width: 100%;
-    min-width: 0;
-    box-sizing: border-box;
-}
-.oc .overwrite-config-dropdown {
-    position: relative;
-    width: 100%;
-}
-.oc .overwrite-config-dropdown-btn {
-    width: 100%;
-    min-height: 34px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 10px;
-    cursor: pointer;
-    font-size: 13px;
-    line-height: 1.4;
-}
-.oc .overwrite-config-dropdown.form-select-wrapper {
-    width: 100%;
-}
-.oc .overwrite-config-dropdown-btn.form-select {
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-}
-.oc .overwrite-config-dropdown-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: calc(100% - 20px);
-    text-align: left;
-}
-.oc .overwrite-config-dropdown-arrow {
-    margin-left: 8px;
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 4px solid var(--text-secondary);
-    flex-shrink: 0;
-}
-.oc .overwrite-config-dropdown-panel {
-    display: none;
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    right: 0;
-    max-height: 220px;
-    overflow-y: auto;
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-sm);
-    background: var(--bg-white);
-    box-shadow: var(--shadow-md);
-    z-index: 10003;
-}
-.oc .overwrite-config-dropdown.open .overwrite-config-dropdown-panel {
-    display: block;
-}
-.oc .overwrite-config-option {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border-light);
-    background: var(--bg-white);
-    color: var(--text-primary);
-    cursor: pointer;
-}
-.oc .overwrite-config-option:last-child {
-    border-bottom: none;
-}
-.oc .overwrite-config-option:hover {
-    background: var(--primary-color);
-    color: var(--select-hover);
-}
-.oc[data-darkmode="true"] .overwrite-config-option {
-    background: var(--bg-gray);
-    border-bottom-color: var(--border-light);
-}
-.oc[data-darkmode="true"] .overwrite-config-option:hover {
-    background: var(--primary-color);
-    color: var(--select-hover);
-}
-.oc .overwrite-config-option:hover .overwrite-config-option-state {
-    border-color: var(--select-hover);
-}
-.oc[data-darkmode="true"] .overwrite-config-option-state {
-    background: var(--bg-white);
-    border-color: var(--border-color);
-}
-.oc .overwrite-config-option.disabled-by-all {
-    cursor: not-allowed;
-    opacity: 0.55;
-    background: var(--bg-gray);
-    color: var(--text-secondary);
-}
-.oc .overwrite-config-option.disabled-by-all:hover {
-    background: var(--bg-gray);
-    color: var(--text-secondary);
-}
-.oc .overwrite-config-option.disabled-by-all .overwrite-config-option-state {
-    border-color: var(--border-light);
-    color: transparent;
-}
-.oc .overwrite-config-option-left {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    flex: 1;
-}
-.oc .overwrite-config-option-left input[type="checkbox"] {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-}
-.oc .overwrite-config-option-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 13px;
-}
-.oc .overwrite-config-option-state {
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: transparent;
-    background: var(--bg-white);
-    font-size: 12px;
-    line-height: 1;
-}
-.oc .overwrite-config-option.selected .overwrite-config-option-state {
-    border-color: var(--primary-color);
-    background: var(--primary-color);
-    color: var(--select-hover);
-}
-.oc .overwrite-config-dropdown.disabled .overwrite-config-dropdown-btn {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-.oc .overwrite-card-row {
-    display: flex;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    gap: 12px;
-    padding: 8px;
-    max-width: 100%;
-    min-width: 0;
-    align-items: stretch;
-    scrollbar-width: thin;
-    scrollbar-color: var(--primary-color) var(--bg-gray);
-}
-.oc .overwrite-card-row::-webkit-scrollbar {
-    height: 8px;
-}
-.oc .overwrite-card-row::-webkit-scrollbar-thumb {
-    background: var(--primary-color);
-    border-radius: 4px;
-}
-.oc .overwrite-card-row::-webkit-scrollbar-track {
-    background: var(--bg-gray);
-    border-radius: 4px;
-}
-.oc .sub-card.overwrite-item {
-    width: 190px;
-    max-width: 220px;
-    flex: 0 0 auto;
-    box-sizing: border-box;
-    gap: 12px;
-    height: 75px;
-}
-.oc .sub-card.overwrite-item,
-.oc .sub-card.overwrite-item:active,
-.oc .sub-card.overwrite-item:focus {
-    -webkit-tap-highlight-color: transparent;
-}
-.oc .overwrite-drag-line {
-    display: block;
-    min-width: 4px;
-    width: 4px;
-    background: var(--primary-color);
-    border-radius: 2px;
-    margin: 0 2px;
-    align-self: stretch;
-    height: auto;
-}
-.oc .oc-switch {
-  position: relative;
-  display: inline-block;
-  width: 36px;
-  height: 20px;
-  vertical-align: middle;
-}
-.oc .oc-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.oc .oc-switch-slider {
-  position: absolute;
-  cursor: pointer;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background-color: #ccc;
-  border-radius: 20px;
-  transition: .2s;
-}
-.oc .oc-switch-slider:before {
-  position: absolute;
-  content: "";
-  height: 16px; width: 16px;
-  left: 2px; bottom: 2px;
-  background-color: white;
-  border-radius: 50%;
-  transition: .2s;
-}
-.oc .oc-switch input:checked + .oc-switch-slider {
-  background-color: var(--primary-color, #2196F3);
-}
-.oc .oc-switch input:checked + .oc-switch-slider:before {
-  transform: translateX(16px);
-}
-.overwrite-add-icon {
-    font-size: 32px;
-    text-align: center;
-    color: var(--primary-color);
-}
-.overwrite-title-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-.overwrite-title {
-    font-weight: bold;
-    font-size: 15px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 70%;
-}
-.overwrite-info {
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-.overwrite-refresh-btn {
-    position: absolute;
-    right: 72px;
-    bottom: 8px;
-}
-.overwrite-gear-btn {
-    position: absolute;
-    right: 40px;
-    bottom: 8px;
-}
-.overwrite-del-btn {
-    position: absolute;
-    right: 8px;
-    bottom: 8px;
-}
-.sub-card.overwrite-item.active {
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 2px var(--primary-color);
-}
-.sub-card.overwrite-item.dragging {
-    opacity: 0.5;
-    z-index: 1000;
-    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
-    transition: none !important;
-}
-@media screen and (max-width: 768px) {
-    .oc .config-editor-model {
-        width: 95vw;
-        height: 80vh;
-        min-width: 320px;
-    }
-    .oc .config-editor-actions {
-        gap: 5px;
-    }
-    .oc .overwrite-card-row {
-        gap: 6px;
-    }
-    .oc .sub-card.overwrite-item {
-        width: 185px;
-        max-width: 200px;
-        gap: 10px;
-    }
-    .oc .overwrite-drag-line {
-        margin: -2px;
-        width: 2px;
-    }
-}
-</style>
-
+<%
+    local fs = require "luci.openclash"
+    local plugin_version = fs.oc_version()
+%>
 <div class="oc">
     <div class="config-editor-model-overlay" id="config-editor-overlay">
         <div class="config-editor-model" id="config-editor-model">
@@ -759,37 +97,7 @@
     </div>
 </div>
 
-<link rel="stylesheet" href="/luci-static/resources/openclash/lib/codemirror.css"/>
-<link rel="stylesheet" href="/luci-static/resources/openclash/theme/material.css"/>
-<link rel="stylesheet" href="/luci-static/resources/openclash/addon/fold/foldgutter.css"/>
-<link rel="stylesheet" href="/luci-static/resources/openclash/addon/lint/lint.css">
-<link rel="stylesheet" href="/luci-static/resources/openclash/addon/display/fullscreen.css">
-<link rel="stylesheet" href="/luci-static/resources/openclash/addon/dialog/dialog.css">
-<link rel="stylesheet" href="/luci-static/resources/openclash/addon/search/matchesonscrollbar.css">
-<script src="/luci-static/resources/openclash/lib/codemirror.js"></script>
-<script src="/luci-static/resources/openclash/mode/yaml/yaml.js"></script>
-<script src="/luci-static/resources/openclash/mode/shell/shell.js"></script>
-<script src="/luci-static/resources/openclash/mode/properties/properties.js"></script>
-<script src="/luci-static/resources/openclash/addon/fold/foldcode.js"></script>
-<script src="/luci-static/resources/openclash/addon/fold/foldgutter.js"></script>
-<script src="/luci-static/resources/openclash/addon/fold/indent-fold.js"></script>
-<script src="/luci-static/resources/openclash/addon/edit/matchbrackets.js"></script>
-<script src="/luci-static/resources/openclash/addon/selection/active-line.js"></script>
-<script src="/luci-static/resources/openclash/addon/lint/lint.js"></script>
-<script src="/luci-static/resources/openclash/addon/lint/yaml-lint.js"></script>
-<script src="/luci-static/resources/openclash/addon/lint/js-yaml.min.js"></script>
-<script src="/luci-static/resources/openclash/addon/display/fullscreen.js"></script>
-<script src="/luci-static/resources/openclash/addon/display/autorefresh.js"></script>
-<script src="/luci-static/resources/openclash/addon/dialog/dialog.js"></script>
-<script src="/luci-static/resources/openclash/addon/search/searchcursor.js"></script>
-<script src="/luci-static/resources/openclash/addon/search/search.js"></script>
-<script src="/luci-static/resources/openclash/addon/scroll/annotatescrollbar.js"></script>
-<script src="/luci-static/resources/openclash/addon/search/matchesonscrollbar.js"></script>
-<script src="/luci-static/resources/openclash/addon/search/jump-to-line.js"></script>
-<script src="/luci-static/resources/openclash/addon/merge/diff_match_patch.js"></script>
-<script src="/luci-static/resources/openclash/addon/merge/merge.js"></script>
-<link rel="stylesheet" href="/luci-static/resources/openclash/addon/merge/merge.css">
-
+<script src="/luci-static/resources/openclash/js/cm6.min.js?v=<%=plugin_version%>"></script>
 <script type="text/javascript">
 var levelTranslations = {
     'info': '<%:Info%>',
@@ -814,6 +122,8 @@ var ConfigEditor = {
     currentViewMode: 'original',
     runtimeContent: '',
     mergeViewActive: false,
+    isFullscreen: false,
+    mergeShowDifferences: true,
     SVG_COMPARE: `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="8" height="18" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
@@ -878,7 +188,16 @@ var ConfigEditor = {
             } else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
                 e.preventDefault();
                 self.resetZoom();
-            } else if (e.key === 'Escape' && (!self.editorInstance || !self.editorInstance.getOption("fullScreen"))) {
+            } else if (e.key === 'F11') {
+                e.preventDefault();
+                self.toggleFullscreen();
+            } else if (e.key === 'F10' && self.mergeViewActive) {
+                e.preventDefault();
+                self.toggleMergeDifferences();
+            } else if (e.key === 'Escape' && self.isFullscreen) {
+                e.preventDefault();
+                self.toggleFullscreen(false);
+            } else if (e.key === 'Escape' && !self.isFullscreen) {
                 self.closeEditor();
             }
         });
@@ -935,6 +254,10 @@ var ConfigEditor = {
     },
 
     show: function(configFile) {
+        var self = this;
+        if (typeof isDarkBackground === 'function' && isDarkBackground(document.body)) {
+            document.documentElement.setAttribute('data-darkmode', 'true');
+        }
         this.isOverwrite = false;
         this.currentViewMode = 'original';
         this.currentConfigFile = '';
@@ -942,9 +265,10 @@ var ConfigEditor = {
         this.runtimeContent = '';
         this.isModified = false;
         this.mergeViewActive = false;
+        this.isFullscreen = false;
 
         if (this.editorInstance) {
-            if (this.editorInstance.toTextArea) this.editorInstance.toTextArea();
+            this._destroyEditor();
             this.editorInstance = null;
         }
         var textarea = document.getElementById('config-editor-textarea');
@@ -989,19 +313,21 @@ var ConfigEditor = {
 
         this.hideMergeView();
         this.updateModeTabs();
-        this.loadConfigContent();
+        self.loadConfigContent();
     },
 
     showOverwrite: function() {
+        var self = this;
         this.isOverwrite = true;
         this.currentViewMode = 'original';
         this.originalContent = '';
         this.runtimeContent = '';
         this.isModified = false;
         this.mergeViewActive = false;
+        this.isFullscreen = false;
 
         if (this.editorInstance) {
-            if (this.editorInstance.toTextArea) this.editorInstance.toTextArea();
+            this._destroyEditor();
             this.editorInstance = null;
         }
         var textarea = document.getElementById('config-editor-textarea');
@@ -1045,16 +371,81 @@ var ConfigEditor = {
         }
 
         this.hideMergeView();
-        this.loadConfigContent();
+        self.loadConfigContent();
+    },
+
+    _destroyEditor: function() {
+        this.toggleFullscreen(false);
+        if (this.editorInstance) {
+            if (this.editorInstance.a && this.editorInstance.a.destroy) {
+                this.editorInstance.a.destroy();
+                if (this.editorInstance.b && this.editorInstance.b.destroy) this.editorInstance.b.destroy();
+            } else if (this.editorInstance.destroy) {
+                this.editorInstance.destroy();
+            } else if (this.editorInstance.toTextArea) {
+                this.editorInstance.toTextArea();
+            }
+            this.editorInstance = null;
+        }
+        var textarea = document.getElementById('config-editor-textarea');
+        if (textarea) textarea.style.display = '';
+    },
+
+    toggleFullscreen: function(forceState) {
+        var target = null;
+        if (this.mergeViewActive && this.editorInstance && this.editorInstance.dom) {
+            target = this.editorInstance.dom;
+        } else if (this.editorInstance && this.editorInstance.dom) {
+            target = this.editorInstance.dom;
+        }
+        if (!target) return;
+
+        var nextState = typeof forceState === 'boolean' ? forceState : !this.isFullscreen;
+        this.isFullscreen = nextState;
+        if (nextState) {
+            target.classList.add('cm-fullscreen');
+            target._fsOriginalParent = target.parentNode;
+            if (target.parentNode !== document.body) document.body.appendChild(target);
+            target.style.setProperty('position', 'fixed', 'important');
+            target.style.setProperty('top', '0', 'important');
+            target.style.setProperty('left', '0', 'important');
+            target.style.setProperty('right', '0', 'important');
+            target.style.setProperty('bottom', '0', 'important');
+            target.style.setProperty('width', '100vw', 'important');
+            target.style.setProperty('height', '100vh', 'important');
+            target.style.setProperty('z-index', '999999', 'important');
+            target.style.setProperty('background', 'var(--bg-light, #f5f5f5)', 'important');
+        } else {
+            target.classList.remove('cm-fullscreen');
+            if (target._fsOriginalParent && target._fsOriginalParent !== document.body) {
+                target._fsOriginalParent.appendChild(target);
+            }
+            target._fsOriginalParent = null;
+            target.style.position = '';
+            target.style.top = '';
+            target.style.left = '';
+            target.style.right = '';
+            target.style.bottom = '';
+            target.style.width = '';
+            target.style.height = '';
+            target.style.zIndex = '';
+            target.style.background = '';
+        }
+    },
+
+    toggleMergeDifferences: function() {
+        if (!this.mergeViewActive || !this.editorInstance || !this.editorInstance.reconfigure) return;
+        this.mergeShowDifferences = !this.mergeShowDifferences;
+        this.editorInstance.reconfigure({ highlightChanges: this.mergeShowDifferences, gutter: this.mergeShowDifferences });
+        if (this.editorInstance.dom) {
+            this.editorInstance.dom.classList.toggle('oc-diff-hidden', !this.mergeShowDifferences);
+        }
     },
 
     hide: function() {
         this.overlay.classList.remove('show');
 
-        if (this.editorInstance) {
-            if (this.editorInstance.toTextArea) this.editorInstance.toTextArea();
-            this.editorInstance = null;
-        }
+        this._destroyEditor();
 
         this.isModified = false;
         this.originalContent = '';
@@ -1165,53 +556,70 @@ var ConfigEditor = {
             textarea.style.display = 'block';
 
             if (self.editorInstance) {
-                if (self.editorInstance.toTextArea) self.editorInstance.toTextArea();
-                self.editorInstance = null;
+                self._destroyEditor();
             }
-            self.editorInstance = CodeMirror.fromTextArea(textarea, {
-                mode: mode,
-                autoRefresh: true,
-                styleActiveLine: true,
-                lineNumbers: true,
-                theme: "material",
-                lineWrapping: true,
-                matchBrackets: true,
-                foldGutter: true,
-                lint: lint,
-                readOnly: readOnly,
-                gutters: lint
-                    ? ["CodeMirror-linenumbers", "CodeMirror-foldgutter", "CodeMirror-lint-markers"]
-                    : ["CodeMirror-linenumbers", "CodeMirror-foldgutter"],
-                extraKeys: {
-                    "F11": function(cm) {
-                        cm.setOption("fullScreen", !cm.getOption("fullScreen"));
-                    },
-                    "Esc": function(cm) {
-                        if (cm.getOption("fullScreen")) {
-                            cm.setOption("fullScreen", false);
-                        }
-                    },
-                    "Tab": function(cm) {
-                        if (cm.somethingSelected()) {
-                            cm.indentSelection('add');
-                        } else {
-                            var spaces = Array(cm.getOption("indentUnit") + 1).join(" ");
-                            cm.replaceSelection(spaces);
-                        }
-                    },
-                    "Ctrl-S": function(cm) {
-                        if (!readOnly) self.saveConfigContent();
-                    }
+
+            var exts = [];
+            var isDark = (typeof isDarkBackground === 'function' && isDarkBackground(document.body));
+            var topSearch = (CM6 && typeof CM6.topSearchExtension === 'function') ? CM6.topSearchExtension() : null;
+            exts.push(CM6.themeExtension(isDark));
+            if (topSearch) exts.push(topSearch);
+
+            if (mode === 'text/yaml' || mode === 'text/x-yaml') {
+                exts.push(CM6.yaml());
+                if (lint) {
+                    exts.push(CM6.yamlLinter());
+                    exts.push(CM6.lintGutter());
                 }
+                exts.push(CM6.autocompletion({ override: [CM6.mihomoCompletion] }));
+                exts.push(CM6.indentUnit.of("  "));
+                exts.push(CM6.indentMarkerExtension());
+            } else if (mode === 'text/x-sh' || mode === 'shell') {
+                exts.push(CM6.StreamLanguage.define(CM6.shell));
+            } else if (mode === 'text/x-properties' || mode === 'properties') {
+                exts.push(CM6.StreamLanguage.define(CM6.properties));
+            }
+
+            if (readOnly) {
+                exts.push(CM6.EditorState.readOnly.of(true));
+            } else {
+                if (mode === 'text/yaml' || mode === 'text/x-yaml') {
+                    exts.push(CM6.placeholderExtension('<%:Enter YAML configuration...%>'));
+                } else if (mode === 'text/x-sh' || mode === 'shell') {
+                    exts.push(CM6.placeholderExtension('<%:Enter shell script...%>'));
+                } else {
+                    exts.push(CM6.placeholderExtension('<%:Enter configuration...%>'));
+                }
+            }
+
+            exts.push(CM6.keymap.of([
+                { key: 'Ctrl-s', run: function() {
+                    if (!readOnly) self.saveConfigContent();
+                    return true;
+                }}
+            ]));
+
+            var parent = textarea.parentNode;
+            self.editorInstance = new CM6.EditorView({
+                state: CM6.EditorState.create({
+                    doc: content,
+                    extensions: [CM6.baseExtensions(), ...exts]
+                }),
+                parent: parent
             });
-            self.editorInstance.setSize('100%', '100%');
-            self.editorInstance.setValue(content);
-            self.editorInstance.refresh();
+
+            textarea.style.display = 'none';
+            self.editorInstance.dom.style.height = '100%';
+
             if (!readOnly) {
-                self.editorInstance.on("change", function() {
-                    self.isModified = self.editorInstance.getValue() !== self.originalContent;
-                    self.updateSaveButtonState();
-                });
+                var originalDispatch = self.editorInstance.dispatch;
+                self.editorInstance.dispatch = function(tr) {
+                    originalDispatch.call(self.editorInstance, tr);
+                    if (tr.docChanged) {
+                        self.isModified = self.editorInstance.state.doc.toString() !== self.originalContent;
+                        self.updateSaveButtonState();
+                    }
+                };
             }
         }
 
@@ -1231,14 +639,12 @@ var ConfigEditor = {
         }
 
         fetch(url)
-            .then(function(response) {
-                if (!response.ok) {
-                    throw new Error('HTTP error! status: ' + response.status);
-                }
-                return response.json();
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
             })
             .then(function(data) {
-                if (data.content !== undefined) {
+                if (data.status === 'success' && data.content !== undefined) {
                     if (self.currentViewMode === 'runtime' && !self.isOverwrite) {
                         self.runtimeContent = data.content;
                         renderEditor(self.runtimeContent, "text/yaml", true, false);
@@ -1250,10 +656,11 @@ var ConfigEditor = {
                     }
                     self.updateModeTabs();
                 } else {
-                    throw new Error('Invalid response data');
+                    loadingDiv.querySelector('span').textContent = '<%:Failed to load config file%>';
+                    statusText.textContent = '<%:Load failed%>';
                 }
             })
-            .catch(function(error) {
+            .catch(function(err) {
                 loadingDiv.querySelector('span').textContent = '<%:Failed to load config file%>';
                 statusText.textContent = '<%:Load failed%>';
             });
@@ -1296,67 +703,54 @@ var ConfigEditor = {
             });
         };
 
-        let showDifferences = true;
+        this.mergeShowDifferences = true;
 
         Promise.all([getOriginal(), getRuntime()]).then(function(contents){
             var original = contents[0] || '';
             var runtime = contents[1] || '';
             container.innerHTML = '';
-            if (self.editorInstance && self.editorInstance.toTextArea) self.editorInstance.toTextArea();
-            self.editorInstance = CodeMirror.MergeView(container, {
-                value: original,
-                orig: runtime,
-                mode: "text/yaml",
-                theme: "material",
-                lineNumbers: true,
-                autoRefresh: true,
-                styleActiveLine: true,
-                lineWrapping: true,
-                matchBrackets: true,
-                foldGutter: true,
-                lint: true,
-                highlightDifferences: showDifferences,
-                connect: null,
-                collapseIdentical: false,
-                readOnly: false,
-                gutters: ["CodeMirror-linenumbers", "CodeMirror-foldgutter", "CodeMirror-lint-markers"],
-                extraKeys: {
-                    "F10": function() {
-                        showDifferences = !showDifferences;
-                        if (self.editorInstance && self.editorInstance.setShowDifferences) {
-                            self.editorInstance.setShowDifferences(showDifferences);
-                        }
-                    },
-                    "F11": function(cm) {
-                        cm.setOption("fullScreen", !cm.getOption("fullScreen"));
-                    },
-                    "Esc": function(cm) {
-                        if (cm.getOption("fullScreen")) cm.setOption("fullScreen", false);
-                    },
-                    "Tab": function(cm) {
-                        if (cm.somethingSelected()) {
-                            cm.indentSelection('add');
-                        } else {
-                            var spaces = Array(cm.getOption("indentUnit") + 1).join(" ");
-                            cm.replaceSelection(spaces);
-                        }
-                    },
-                    "Ctrl-S": function(cm) {
-                        self.saveConfigContent();
-                    }
-                }
-            });
-            var leftEditor = self.editorInstance.edit;
-            if (leftEditor) {
-                leftEditor.on("change", function() {
-                    self.isModified = leftEditor.getValue() !== self.originalContent;
-                    self.updateSaveButtonState();
-                });
+            if (self.editorInstance) self._destroyEditor();
+
+            var isDark = (typeof isDarkBackground === 'function' && isDarkBackground(document.body));
+            var themeExt = CM6.themeExtension(isDark);
+            var topSearch = (CM6 && typeof CM6.topSearchExtension === 'function') ? CM6.topSearchExtension() : null;
+            var extA = [CM6.baseExtensions(), themeExt, CM6.placeholderExtension('<%:Edit original config...%>'), CM6.yaml(), CM6.yamlLinter(), CM6.lintGutter(), CM6.autocompletion({ override: [CM6.mihomoCompletion] }), CM6.indentUnit.of("  "), CM6.indentMarkerExtension()];
+            var extB = [CM6.baseExtensions(), themeExt, CM6.placeholderExtension('<%:Runtime config (read only)%>'), CM6.yaml(), CM6.indentUnit.of("  "), CM6.indentMarkerExtension(), CM6.EditorState.readOnly.of(true)];
+            var mergeDefaults = CM6.mergeDefaultConfig || {};
+            if (topSearch) {
+                extA.push(topSearch);
+                extB.push(topSearch);
             }
-            if (self.editorInstance.editor)
-                self.editorInstance.editor().setSize('100%', '100%');
-            if (self.editorInstance.rightOriginal && self.editorInstance.rightOriginal())
-                self.editorInstance.rightOriginal().setSize('100%', '100%');
+
+            self.editorInstance = new CM6.MergeView({
+                a: {
+                    doc: original,
+                    extensions: extA
+                },
+                b: {
+                    doc: runtime,
+                    extensions: extB
+                },
+                parent: container,
+                diffConfig: mergeDefaults.diffConfig || { scanLimit: 5000 },
+                gutter: typeof mergeDefaults.gutter === 'boolean' ? mergeDefaults.gutter : true,
+                revertControls: mergeDefaults.revertControls || 'b-to-a',
+                highlightChanges: self.mergeShowDifferences,
+                collapseUnchanged: typeof mergeDefaults.collapseUnchanged !== 'undefined' ? mergeDefaults.collapseUnchanged : false
+            });
+
+            var leftView = self.editorInstance.a;
+            if (leftView) {
+                var origDispatchA = leftView.dispatch;
+                leftView.dispatch = function(tr) {
+                    origDispatchA.call(leftView, tr);
+                    if (tr.docChanged) {
+                        self.isModified = leftView.state.doc.toString() !== self.originalContent;
+                        self.updateSaveButtonState();
+                    }
+                };
+            }
+
             self.mergeViewActive = true;
             if (statusText) statusText.textContent = '<%:Compare mode: left(Original Config), right(Runtime Config)%>';
             var layoutBtn = document.getElementById('config-editor-layout');
@@ -1401,10 +795,12 @@ var ConfigEditor = {
         saveBtn.disabled = true;
 
         var content;
-        if (this.mergeViewActive && this.editorInstance && this.editorInstance.edit) {
-            content = this.editorInstance.edit.getValue();
+        if (this.mergeViewActive && this.editorInstance && this.editorInstance.a) {
+            content = this.editorInstance.a.state.doc.toString();
+        } else if (this.editorInstance.state) {
+            content = this.editorInstance.state.doc.toString();
         } else {
-            content = this.editorInstance.getValue();
+            content = '';
         }
 
         if (!content) {
@@ -1426,11 +822,9 @@ var ConfigEditor = {
             method: 'POST',
             body: formData
         })
-        .then(function(response) {
-            if (!response.ok) {
-                throw new Error('HTTP error! status: ' + response.status);
-            }
-            return response.json();
+        .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
         })
         .then(function(data) {
             saveBtn.disabled = false;
@@ -1457,16 +851,10 @@ var ConfigEditor = {
                 }, 3000);
             }
         })
-        .catch(function(error) {
+        .catch(function(err) {
             saveBtn.disabled = false;
             statusText.textContent = '<%:Save failed%>';
-            alert('<%:Save config failed:%> ' + error.message);
-
-            setTimeout(function() {
-                if (statusText && statusText.textContent === '<%:Save failed%>') {
-                    statusText.textContent = '<%:Ready%>';
-                }
-            }, 3000);
+            alert('<%:Failed to save config file:%> ' + err.message);
         });
     },
 
@@ -1477,10 +865,12 @@ var ConfigEditor = {
         }
 
         var content;
-        if (this.mergeViewActive && this.editorInstance && this.editorInstance.edit) {
-            content = this.editorInstance.edit.getValue();
+        if (this.mergeViewActive && this.editorInstance && this.editorInstance.a) {
+            content = this.editorInstance.a.state.doc.toString();
+        } else if (this.editorInstance.state) {
+            content = this.editorInstance.state.doc.toString();
         } else {
-            content = this.editorInstance.getValue();
+            content = '';
         }
 
         var filename;
@@ -3160,17 +2550,17 @@ var ConfigEditor = {
         this.currentZoom = newZoom;
 
         if (this.editorInstance) {
-            var cmWrapper = this.model.querySelector('.CodeMirror');
-            if (cmWrapper) {
+            var cmEl = null;
+            if (this.editorInstance.dom) cmEl = this.editorInstance.dom;
+            else if (this.editorInstance.a && this.editorInstance.a.dom) cmEl = this.editorInstance.a.dom;
+
+            if (cmEl) {
                 this.zoomLevels.forEach(function(level) {
-                    cmWrapper.classList.remove('zoom-' + level);
+                    cmEl.classList.remove('zoom-' + level);
                 });
-
                 if (this.currentZoom !== 100) {
-                    cmWrapper.classList.add('zoom-' + this.currentZoom);
+                    cmEl.classList.add('zoom-' + this.currentZoom);
                 }
-
-                this.editorInstance.refresh();
             }
         }
     },
@@ -3392,18 +2782,6 @@ var ConfigEditor = {
 
             self.model.style.width = newWidth + 'px';
             self.model.style.height = newHeight + 'px';
-
-            if (self.editorInstance) {
-                requestAnimationFrame(function() {
-                    if (self.mergeViewActive && self.editorInstance.editor) {
-                        self.editorInstance.editor().refresh();
-                        if (self.editorInstance.rightOriginal)
-                            self.editorInstance.rightOriginal().refresh();
-                    } else {
-                        self.editorInstance.refresh();
-                    }
-                });
-            }
         }
 
         function onMouseUp() {
@@ -3413,18 +2791,6 @@ var ConfigEditor = {
 
             document.removeEventListener('mousemove', onMouseMove);
             document.removeEventListener('mouseup', onMouseUp);
-
-            if (self.editorInstance) {
-                setTimeout(function() {
-                    if (self.mergeViewActive && self.editorInstance.editor) {
-                        self.editorInstance.editor().refresh();
-                        if (self.editorInstance.rightOriginal)
-                            self.editorInstance.rightOriginal().refresh();
-                    } else {
-                        self.editorInstance.refresh();
-                    }
-                }, 50);
-            }
         }
 
         resizeHandle.addEventListener('touchstart', function(e) {
@@ -3465,18 +2831,6 @@ var ConfigEditor = {
             self.model.style.width = newWidth + 'px';
             self.model.style.height = newHeight + 'px';
 
-            if (self.editorInstance) {
-                requestAnimationFrame(function() {
-                    if (self.mergeViewActive && self.editorInstance.editor) {
-                        self.editorInstance.editor().refresh();
-                        if (self.editorInstance.rightOriginal)
-                            self.editorInstance.rightOriginal().refresh();
-                    } else {
-                        self.editorInstance.refresh();
-                    }
-                });
-            }
-
             e.preventDefault();
         }
 
@@ -3486,23 +2840,12 @@ var ConfigEditor = {
 
             document.removeEventListener('touchmove', onTouchMove);
             document.removeEventListener('touchend', onTouchEnd);
-
-            if (self.editorInstance) {
-                setTimeout(function() {
-                    if (self.mergeViewActive && self.editorInstance.editor) {
-                        self.editorInstance.editor().refresh();
-                        if (self.editorInstance.rightOriginal)
-                            self.editorInstance.rightOriginal().refresh();
-                    } else {
-                        self.editorInstance.refresh();
-                    }
-                }, 50);
-            }
         }
     }
 };
 
 document.addEventListener('DOMContentLoaded', function() {
     ConfigEditor.init();
+    if (typeof CM6 !== 'undefined' && CM6.startThemeObserver) CM6.startThemeObserver();
 });
 </script>
