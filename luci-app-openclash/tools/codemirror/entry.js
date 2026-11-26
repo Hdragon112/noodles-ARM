@@ -1,6 +1,9 @@
 // ============================================================
 // CodeMirror 6 Bundle — OpenClash
-// Build: npx esbuild tools/codemirror/entry.js --bundle --format=iife --global-name=CM6 --minify --target=es2019 --outfile=root/www/luci-static/resources/openclash/js/cm6.min.js --legal-comments=none --loader:.css=text
+// Build (three files, from tools/codemirror):
+//   npx esbuild entry.js --bundle --format=iife --global-name=CM6 --minify --target=es2019 --outfile=../../root/www/luci-static/resources/openclash/js/cm6.min.js --legal-comments=none --loader:.css=text
+//   npx esbuild entry-md-render.js --bundle --format=iife --global-name=OCMarkdown --minify --target=es2019 --outfile=../../root/www/luci-static/resources/openclash/js/md-render.min.js --legal-comments=none --loader:.css=text
+//   npx esbuild entry-lint-worker.js --bundle --format=iife --minify --target=es2019 --outfile=../../root/www/luci-static/resources/openclash/js/lint-worker.min.js --legal-comments=none
 // ============================================================
 
 // ---- Core ----
@@ -24,7 +27,7 @@ import {
 import {
     syntaxHighlighting, HighlightStyle, bracketMatching,
     foldGutter, indentOnInput, StreamLanguage, foldKeymap, indentUnit,
-    getIndentUnit, foldable
+    getIndentUnit, ensureSyntaxTree, syntaxTree, Language
 } from "@codemirror/language"
 
 // ---- Tags ----
@@ -36,7 +39,6 @@ const logTag = {
     bracket: Tag.define(),
     category: Tag.define(),
     logString: Tag.define(),
-    logLink: Tag.define(),
     levelInfo: Tag.define(),
     levelWarning: Tag.define(),
     levelError: Tag.define(),
@@ -48,7 +50,6 @@ const logTag = {
 
 // ---- Language packages ----
 import { yaml } from "@codemirror/lang-yaml"
-import { markdown } from "@codemirror/lang-markdown"
 
 // ---- Legacy modes ----
 import { shell } from "@codemirror/legacy-modes/mode/shell"
@@ -56,7 +57,6 @@ import { properties } from "@codemirror/legacy-modes/mode/properties"
 
 // ---- Lint ----
 import { linter, lintGutter } from "@codemirror/lint"
-import { loadAll, YAML11_SCHEMA } from "js-yaml"
 
 // ---- Search ----
 import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search"
@@ -73,21 +73,88 @@ import { githubDark, githubLight } from "@fsegurai/codemirror-theme-bundle"
 // ---- Merge view ----
 import { MergeView } from "@codemirror/merge"
 
-// ---- Markdown rendering ----
-import { marked } from "marked"
-import hljs from "highlight.js/lib/core"
-import yamlLang from "highlight.js/lib/languages/yaml"
-import bashLang from "highlight.js/lib/languages/bash"
-import jsonLang from "highlight.js/lib/languages/json"
-import githubLightCSS from "highlight.js/styles/github.css"
-import githubDarkCSS from "highlight.js/styles/github-dark-dimmed.css"
+// ---- Markdown preview rendering (lazy-loaded from md-render.min.js) ----
+// Contract: pages that need the preview renderer call CM6.ensureMarkdown()
+// first and use window.OCMarkdown afterwards.
+var ocSelfSrc = (function () {
+    try { return document.currentScript ? document.currentScript.src : ''; } catch (e) { return ''; }
+})();
+var ocMdState = 0; // 0 idle, 1 loading, 2 ready
+var ocMdWaiters = [];
+var ocHljsDark = null;
 
-hljs.registerLanguage("yaml", yamlLang)
-hljs.registerLanguage("yml", yamlLang)
-hljs.registerLanguage("bash", bashLang)
-hljs.registerLanguage("sh", bashLang)
-hljs.registerLanguage("shell", bashLang)
-hljs.registerLanguage("json", jsonLang)
+function ocMarkdownUrl() {
+    var base = window.ocCM6Url || ocSelfSrc;
+    if (!base) return '';
+    return base.replace(/cm6\.min\.js/, 'md-render.min.js');
+}
+
+function ensureMarkdown(cb) {
+    if (window.OCMarkdown) { if (cb) cb(); return; }
+    if (cb) ocMdWaiters.push(cb);
+    if (ocMdState === 1) return;
+    ocMdState = 1;
+    var s = document.createElement('script');
+    s.src = ocMarkdownUrl();
+    s.onload = function() {
+        ocMdState = 2;
+        var waiters = ocMdWaiters;
+        ocMdWaiters = [];
+        for (var i = 0; i < waiters.length; i++) {
+            try { waiters[i](); } catch (e) {}
+        }
+        if (ocHljsDark !== null && window.OCMarkdown && OCMarkdown.switchHljsTheme) {
+            try { OCMarkdown.switchHljsTheme(ocHljsDark); } catch (e) {}
+        }
+    };
+    s.onerror = function() {
+        ocMdState = 0;
+        ocMdWaiters = [];
+    };
+    document.head.appendChild(s);
+}
+
+function switchHljsTheme(isDark) {
+    ocHljsDark = isDark;
+    if (window.OCMarkdown && OCMarkdown.switchHljsTheme) {
+        try { OCMarkdown.switchHljsTheme(isDark); } catch (e) {}
+    }
+}
+
+function renderMarkdown(text) {
+    if (window.OCMarkdown && OCMarkdown.renderMarkdown) return OCMarkdown.renderMarkdown(text);
+    return '';
+}
+
+// ---- Minimal markdown language for the preview editors ----
+// The full @codemirror/lang-markdown pulls in the HTML/CSS/JS parser chain
+// (~240KB) for embedded code fences; a small stream mode is enough here and
+// StreamLanguage only tokenizes what is on screen.
+const ocMarkdownMode = {
+    name: "markdown",
+    startState: function () { return { fenced: false }; },
+    token: function (stream, state) {
+        if (stream.sol() && stream.match(/^(?:`{3,}|~{3,})/)) {
+            state.fenced = !state.fenced;
+            stream.skipToEnd();
+            return "comment";
+        }
+        if (state.fenced) { stream.skipToEnd(); return "comment"; }
+        if (stream.sol() && stream.match(/#{1,6}\s/)) { stream.skipToEnd(); return "heading"; }
+        if (stream.sol() && stream.match(/>\s?/)) return "quote";
+        if (stream.sol() && stream.match(/(?:[-*+]\s|\d+\.\s)/)) return "list";
+        if (stream.match(/`[^`\n]+`/)) return "monospace";
+        if (stream.match(/\*\*[^*\n]+\*\*/)) return "strong";
+        if (stream.match(/\*[^*\n]+\*/)) return "emphasis";
+        if (stream.match(/\[[^\]\n]*\]\([^)\n]*\)/)) return "link";
+        stream.next();
+        return null;
+    }
+};
+
+function markdown() {
+    return StreamLanguage.define(ocMarkdownMode);
+}
 
 // ============================================================
 // Mihomo / Clash YAML keyword completion
@@ -125,7 +192,7 @@ const mihomoKeywords = [
     { label: "geo-update-interval", type: "keyword", detail: "GEO update interval (hours)" },
     { label: "tun", type: "keyword", detail: "TUN mode configuration" },
     { label: "enable", type: "property", detail: "Enable: true / false" },
-    { label: "stack", type: "property", detail: "Protocol stack: system / gvisor / mixed" },
+    { label: "stack", type: "property", detail: "Protocol stack: system / gvisor / mixed / mips" },
     { label: "device", type: "property", detail: "TUN device name" },
     { label: "dns-hijack", type: "property", detail: "DNS hijack address list" },
     { label: "auto-route", type: "property", detail: "Auto set route: true / false" },
@@ -369,7 +436,7 @@ const mihomoSnippets = [
     }),
 
     // --- sniffer ---
-    snippetCompletion("sniffer:\n  enable: #{1}\n  override-destination: #{2}\n  sniff:\n    TLS:\n      ports: [443]\n    HTTP:\n      ports: [80, 8080-8880]\n      override-destination: true\n    QUIC:\n      ports: [443]\n  # force-domain:\n  #   - +.v2ex.com\n  # skip-domain:\n  #   - Mijia Cloud\n  # parse-pure-ip: true\n  # force-dns-mapping: true\n#{}", {
+    snippetCompletion("sniffer:\n  enable: #{1}\n  override-destination: #{2}\n  sniff:\n    TLS:\n      ports: [443]\n    HTTP:\n      ports: [80, 8080-8880]\n      override-destination: false\n    QUIC:\n      ports: [443]\n  # force-domain:\n  #   - +.v2ex.com\n  # skip-domain:\n  #   - Mijia Cloud\n  # parse-pure-ip: true\n  # force-dns-mapping: true\n#{}", {
         label: "sniffer", type: "snippet", detail: "Domain sniffing configuration"
     }),
 
@@ -452,55 +519,113 @@ const mihomoSnippets = [
     }),
 ]
 
+const mihomoCompletionIndex = mihomoKeywords
+    .map(k => ({ lower: k.label.toLowerCase(), item: k }))
+    .concat(mihomoSnippets.map(s => ({ lower: (s.label || '').toLowerCase(), item: s })))
+    .sort((a, b) => (a.lower < b.lower ? -1 : a.lower > b.lower ? 1 : 0))
+
+const mihomoValidFor = /^[\w-]*$/
+
 function mihomoCompletion(context) {
     const word = context.matchBefore(/[\w-]+/)
     if (!word || (word.from === word.to && !context.explicit)) return null
-    const filtered = mihomoKeywords.filter(k =>
-        k.label.toLowerCase().startsWith(word.text.toLowerCase())
-    )
-    const snippets = mihomoSnippets.filter(s => {
-        const label = (s.label || s.name || '')
-        return label.toLowerCase().startsWith(word.text.toLowerCase())
-    })
-    const options = [...filtered, ...snippets]
-    if (!options.length) return null
-    return { from: word.from, options, validFor: /^[\w-]*$/ }
-}
-
-function yamlLinter() {
-    return linter(view => {
-        const diagnostics = []
-        try { loadAll(view.state.doc.toString(), { schema: YAML11_SCHEMA }) } catch (e) {
-            const mark = e.mark
-            if (mark && mark.line !== undefined) {
-                const lineNo = mark.line + 1
-                if (lineNo <= view.state.doc.lines) {
-                    const line = view.state.doc.line(lineNo)
-                    const pos = Math.min(line.from + (mark.column || 0), line.to)
-                    diagnostics.push({ from: pos, to: Math.min(pos + 1, line.to), severity: "error", message: e.reason || e.message })
-                }
-            } else {
-                diagnostics.push({ from: 0, to: 0, severity: "error", message: e.reason || e.message })
-            }
-        }
-        return diagnostics
-    })
-}
-
-var _levelTagMap = null
-var _levelRegex = null
-function _buildLevelCache() {
-    if (!window.levelTranslations) { _levelTagMap = {}; _levelRegex = /(?!)/; return }
-    var map = {}, parts = []
-    for (var key in window.levelTranslations) {
-        if (window.levelTranslations.hasOwnProperty(key)) {
-            var text = window.levelTranslations[key]
-            map[text] = key
-            parts.push(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    const lower = word.text.toLowerCase()
+    const options = []
+    // index is sorted by lower, so the first entry greater than lower ends the scan
+    for (let i = 0; i < mihomoCompletionIndex.length; i++) {
+        const entry = mihomoCompletionIndex[i]
+        if (entry.lower.startsWith(lower)) {
+            options.push(entry.item)
+        } else if (entry.lower > lower) {
+            break
         }
     }
-    _levelTagMap = map
-    _levelRegex = new RegExp('^\\[(' + parts.join('|') + ')\\]')
+    if (!options.length) return null
+    return { from: word.from, options, validFor: mihomoValidFor }
+}
+
+// ---- YAML lint worker (lazy script: js-yaml runs off the main thread) ----
+var ocLintWorker = null
+var ocLintWorkerBroken = false
+var ocLintSeq = 0
+var ocLintWaiters = {}
+
+function ocLintWorkerUrl() {
+    var base = window.ocCM6Url || ocSelfSrc
+    if (!base) return ''
+    return base.replace(/cm6\.min\.js/, 'lint-worker.min.js')
+}
+
+function ocLintEnsureWorker() {
+    if (ocLintWorker || ocLintWorkerBroken) return
+    var url = ocLintWorkerUrl()
+    if (!url || typeof Worker === 'undefined') { ocLintWorkerBroken = true; return }
+    try {
+        ocLintWorker = new Worker(url)
+    } catch (e) {
+        ocLintWorkerBroken = true
+        return
+    }
+    ocLintWorker.onmessage = function (e) {
+        var data = e.data || {}
+        var resolve = ocLintWaiters[data.id]
+        if (!resolve) return
+        delete ocLintWaiters[data.id]
+        resolve(data.error || null)
+    }
+    // Worker missing or blocked: keep the editor usable, just without linting
+    ocLintWorker.onerror = function () {
+        ocLintWorkerBroken = true
+        ocLintWorker = null
+        var waiters = ocLintWaiters
+        ocLintWaiters = {}
+        for (var id in waiters) waiters[id](null)
+    }
+}
+
+function ocLintRun(text) {
+    var id = ++ocLintSeq
+    return new Promise(function (resolve) {
+        ocLintWaiters[id] = resolve
+        ocLintWorker.postMessage({ id: id, text: text })
+    })
+}
+
+function yamlLinter(delay = 750) {
+    ocLintEnsureWorker()
+    return linter(view => {
+        if (!ocLintWorker) return []
+        return ocLintRun(view.state.doc.toString()).then(error => {
+            if (!error) return []
+            if (error.line === null) return [{ from: 0, to: 0, severity: "error", message: error.message }]
+            if (error.line + 1 > view.state.doc.lines) return []
+            const line = view.state.doc.line(error.line + 1)
+            const pos = Math.min(line.from + (error.column || 0), line.to)
+            return [{ from: pos, to: Math.min(pos + 1, line.to), severity: "error", message: error.message }]
+        })
+    }, typeof delay === 'number' ? { delay: delay } : undefined)
+}
+
+var levelTagMap = null
+var levelRegex = null
+// Tags come from the page's ocLogLevelText() helper (compiled to the active language by the
+// "translate_js" controller endpoint); without that helper the log falls back to plain tokens.
+var logLevelKeys = ['info', 'warning', 'error', 'debug', 'tip', 'watchdog', 'fatal']
+function buildLevelCache() {
+    var map = {}, parts = []
+    if (typeof ocLogLevelText === 'function') {
+        for (var i = 0; i < logLevelKeys.length; i++) {
+            var key = logLevelKeys[i]
+            var text = ocLogLevelText(key)
+            if (text) {
+                map[text] = key
+                parts.push(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+            }
+        }
+    }
+    if (!parts.length) { levelTagMap = {}; levelRegex = /(?!)/; return }
+    levelTagMap = map
+    levelRegex = new RegExp('^\\[(' + parts.join('|') + ')\\]')
 }
 
 const logLanguage = StreamLanguage.define({
@@ -509,7 +634,6 @@ const logLanguage = StreamLanguage.define({
         bracket: logTag.bracket,
         category: logTag.category,
         logString: logTag.logString,
-        logLink: logTag.logLink,
         levelInfo: logTag.levelInfo,
         levelWarning: logTag.levelWarning,
         levelError: logTag.levelError,
@@ -528,12 +652,11 @@ const logLanguage = StreamLanguage.define({
         var ch = stream.peek()
         if (!ch) { stream.skipToEnd(); return null }
         if (ch === '\u3010' && stream.match(/\u3010[^\u3011]*\u3011/)) return "bracket"
-        if (state.tabDone) { stream.next(); return "logString" }
-        if (ch === '[') {
-            if (_levelTagMap === null) _buildLevelCache()
-            var levelMatch = stream.match(_levelRegex)
+        if (!state.tabDone && ch === '[') {
+            if (levelTagMap === null) buildLevelCache()
+            var levelMatch = stream.match(levelRegex)
             if (levelMatch) {
-                var levelKey = _levelTagMap[levelMatch[1]]
+                var levelKey = levelTagMap[levelMatch[1]]
                 if (levelKey) {
                     var styleName = 'level' + levelKey.charAt(0).toUpperCase() + levelKey.slice(1)
                     if (logTag[styleName]) return styleName
@@ -541,8 +664,17 @@ const logLanguage = StreamLanguage.define({
                 return "category"
             }
             if (stream.match(/\[[A-Z][^\]]*\]/)) return "category"
+            stream.next()
+            return "logString"
         }
-        if (ch !== '[') { state.tabDone = true }
+        state.tabDone = true
+        var rest = stream.string, p = stream.pos
+        while (p < rest.length) {
+            var c = rest.charCodeAt(p)
+            if (c === 0x3010 || c <= 32 || c === 0xa0 || c === 0x3000) break
+            p++
+        }
+        if (p > stream.pos) { stream.pos = p; return "logString" }
         stream.next()
         return "logString"
     }
@@ -553,7 +685,6 @@ const logHighlightStyle = HighlightStyle.define([
     { tag: logTag.bracket, class: "cmt-log-bracket" },
     { tag: logTag.category, class: "cmt-log-category" },
     { tag: logTag.logString, class: "cmt-log-string" },
-    { tag: logTag.logLink, class: "cmt-log-link" },
     { tag: logTag.levelInfo, class: "cmt-log-level-info" },
     { tag: logTag.levelWarning, class: "cmt-log-level-warning" },
     { tag: logTag.levelError, class: "cmt-log-level-error" },
@@ -563,8 +694,52 @@ const logHighlightStyle = HighlightStyle.define([
     { tag: logTag.levelWatchdog, class: "cmt-log-level-watchdog" },
 ])
 
-function baseExtensions(extra = []) {
-    return [
+function parseAheadExtension(buffer = 1000, budget = 8, catchup = 45, chunk = 300) {
+    return ViewPlugin.fromClass(class {
+        constructor(view) {
+            this.view = view
+            this.rafId = null
+            this.schedule()
+        }
+        update(u) {
+            this.view = u.view
+            if (u.viewportChanged || u.docChanged) this.schedule()
+        }
+        schedule() {
+            if (this.rafId !== null) return
+            var self = this
+            this.rafId = requestAnimationFrame(function() {
+                self.rafId = null
+                self.step()
+            })
+        }
+        step() {
+            var view = this.view
+            if (!view) return
+            if (!view.state.field(Language.state, false)) return
+            var doc = view.state.doc
+            var front = syntaxTree(view.state).length
+            var vpTo = view.viewport.to
+            var frontLine = doc.lineAt(front).number
+            var vpLine = doc.lineAt(vpTo).number
+            var ideal = doc.line(Math.min(vpLine + buffer, doc.lines)).to
+            if (front >= ideal) return
+            var behind = front < vpTo
+            var size = behind ? Math.min(450, Math.max(chunk, Math.ceil((vpLine - frontLine) / 6))) : chunk
+            var to = Math.min(doc.line(Math.min(frontLine + size, doc.lines)).to, ideal)
+            ensureSyntaxTree(view.state, to, behind ? catchup : budget)
+            view.dispatch({})
+            if (syntaxTree(view.state).length < ideal) this.schedule()
+        }
+        destroy() {
+            if (this.rafId !== null) cancelAnimationFrame(this.rafId)
+            this.view = null
+        }
+    })
+}
+
+function baseExtensions(extra = [], opts = {}) {
+    var list = [
         lineNumbers(), highlightActiveLine(), highlightActiveLineGutter(),
         highlightSpecialChars(), drawSelection(), dropCursor(),
         rectangularSelection(), crosshairCursor(),
@@ -575,16 +750,20 @@ function baseExtensions(extra = []) {
         cmKeymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...closeBracketsKeymap, ...foldKeymap, { key: 'Tab', run: function(v) { return acceptCompletion(v) || indentMore(v) } }]),
         ...extra
     ]
+    if (opts.preload !== false) list.push(parseAheadExtension())
+    return list
 }
 
 // ============================================================
 // Custom indentation markers
-// Replaces @replit/codemirror-indentation-markers (unmaintained).
 // Fixes left:2px→6px: @codemirror/view >=~6.29 changed .cm-line
 // padding from "0 2px" to "0 2px 0 6px".
+// The ::before pseudo-element fills the full line height (no gaps)
+// but is capped at one visual row (--oc-lh) so it never bleeds
+// through wrapped text on long lines.
 // ============================================================
 
-const _ocImBaseTheme = EditorView.baseTheme({
+const ocImBaseTheme = EditorView.baseTheme({
     '.cm-line': { position: 'relative' },
     '.cm-oc-im::before': {
         content: '""',
@@ -592,7 +771,7 @@ const _ocImBaseTheme = EditorView.baseTheme({
         top: 0,
         left: '6px',
         right: 0,
-        bottom: 0,
+        height: 'var(--oc-lh, 100%)',
         background: 'var(--oc-im)',
         pointerEvents: 'none',
         zIndex: '-1',
@@ -601,7 +780,7 @@ const _ocImBaseTheme = EditorView.baseTheme({
     '&dark':  { '--oc-im-c': '#30363d', '--oc-im-ca': '#484f58' },
 })
 
-function _ocImIndent(text, ts) {
+function ocImIndent(text, ts) {
     let n = 0
     for (let i = 0; i < text.length; i++) {
         if (text[i] === ' ') n++
@@ -611,125 +790,112 @@ function _ocImIndent(text, ts) {
     return n
 }
 
-// Compute per-line structural nesting depth using CM6's foldable() function.
-// foldable(state, lineStart, lineEnd) → {from, to} | null
-// Returns an array of depths indexed by (lineNo - fl).
-function _foldDepth(state, fl, ll, doc) {
-    var ranges = []
-    for (var n = fl; n <= ll; n++) {
-        var fr = foldable(state, doc.line(n).from, doc.line(n).to)
-        if (fr) ranges.push({ from: fr.from, to: fr.to })
-    }
-
-    var depths = new Int32Array(ll - fl + 1)
-    for (var n = fl; n <= ll; n++) {
-        var pos = doc.line(n).from, d = 0
-        for (var i = 0; i < ranges.length; i++)
-            if (ranges[i].from < pos && pos < ranges[i].to) d++
-        depths[n - fl] = d
-    }
-    return depths
-}
-
-// Single-line version of _foldDepth, for measure.read where the full
-// array hasn't been precomputed.
-function _foldDepth1(state, lineNo, fl, ll, doc) {
-    var pos = doc.line(lineNo).from, d = 0
-    for (var n = fl; n <= ll; n++) {
-        var fr = foldable(state, doc.line(n).from, doc.line(n).to)
-        if (fr && fr.from < pos && pos < fr.to) d++
-    }
-    return d
-}
-
-function indentMarkerExtension({ highlightActiveBlock = true, hideFirstIndent = false, thickness = 1, colors } = {}) {
+function indentMarkerExtension({ highlightActiveBlock = true, hideFirstIndent = false, thickness = 1, colors, buffer = 1000 } = {}) {
     var extra = colors ? EditorView.baseTheme({
         '&light': { '--oc-im-c': colors.light || '#e1e4e8', '--oc-im-ca': colors.activeLight || '#d0d7de' },
         '&dark':  { '--oc-im-c': colors.dark  || '#30363d', '--oc-im-ca': colors.activeDark  || '#484f58' },
     }) : []
 
     return [
-        _ocImBaseTheme,
+        ocImBaseTheme,
         extra,
         ViewPlugin.fromClass(class {
             constructor(view) {
-                this._view = view
-                this._stepPx = null            // measured indent-unit pixel width
-                this._measurePending = false
-                this.decorations = this._build(view)
-                this._scheduleMeasure(view)
+                this.view = view
+                this.stepPx = null
+                this.measurePending = false
+                this.cacheStep = 0
+                this.cacheLh = 0
+                this.styleCache = new Map()
+                this.decorations = this.build(view)
+                this.scheduleMeasure(view)
             }
 
             update(u) {
-                this._view = u.view
+                this.view = u.view
                 var needsRebuild = u.docChanged || u.viewportChanged ||
                     (highlightActiveBlock && u.selectionSet)
-                if (needsRebuild) {
-                    this._stepPx = null
-                    this._measurePending = false
-                    this.decorations = this._build(u.view)
-                    this._scheduleMeasure(u.view)
-                } else if (this._measurePending) {
-                    this._measurePending = false
-                    this.decorations = this._build(u.view)
+                if (!needsRebuild) {
+                    if (this.measurePending) {
+                        this.measurePending = false
+                        this.decorations = this.build(u.view)
+                    }
+                    return
                 }
+                // decorations must cover the committed viewport in this update cycle;
+                // only the glyph metrics follow the layout, so they are kept between scroll frames
+                var remeasure = u.geometryChanged || this.stepPx === null
+                if (remeasure) this.stepPx = null
+                this.decorations = this.build(u.view)
+                if (remeasure) this.scheduleMeasure(u.view)
             }
 
-            _scheduleMeasure(view) {
-                if (this._measureId !== undefined) view.cancelMeasure(this._measureId)
-                this._measureId = view.requestMeasure(this._mkSpec())
+            scheduleMeasure(view) {
+                if (this.measureId !== undefined) view.cancelMeasure(this.measureId)
+                this.measureId = view.requestMeasure(this.mkSpec())
             }
 
-            // Measure one indent unit's pixel width in the read phase
-            // (coordsAtPos is only safe here, not during update).
-            _mkSpec() {
+            mkSpec() {
                 var self = this
                 return {
                     read: function(view) {
-                        var sa = hideFirstIndent ? 1 : 0
                         var state = view.state, iw = getIndentUnit(state), ts = state.tabSize, doc = state.doc
                         var fl = doc.lineAt(view.viewport.from).number
                         var ll = doc.lineAt(view.viewport.to).number
-                        var bl = Math.max(1, fl - 80), el = Math.min(doc.lines, ll + 80)
 
-                        // Compute max fold depth in visible range
-                        var maxLvl = 0
+                        var hasIndent = false
                         for (var n = fl; n <= ll; n++) {
-                            if (n < bl || n > el) continue
-                            var fd = _foldDepth1(state, n, fl, ll, doc)
-                            if (fd > maxLvl) maxLvl = fd
+                            if (ocImIndent(doc.line(n).text, ts) >= iw) { hasIndent = true; break }
                         }
-                        if (maxLvl <= sa) return -1
 
-                        // Measure exact pixel width of one indent unit
-                        var stepPx = 0
-                        for (var n = fl; n <= ll; n++) {
-                            if (n < bl || n > el) continue
-                            var t = doc.line(n).text
-                            if (t.trim() === '') continue
-                            if (_ocImIndent(t, ts) >= iw) {
-                                var c0 = view.coordsAtPos(doc.line(n).from)
-                                var c1 = view.coordsAtPos(doc.line(n).from + iw)
-                                if (c0 && c1) { stepPx = Math.round((c1.left - c0.left) * 100) / 100; break }
+                        var stepPx = 0, lineHeight = 0
+
+                        if (hasIndent) {
+                            for (var n = fl; n <= ll; n++) {
+                                var t = doc.line(n).text
+                                if (t.trim() === '') continue
+                                if (ocImIndent(t, ts) >= iw) {
+                                    var c0 = view.coordsAtPos(doc.line(n).from)
+                                    var c1 = view.coordsAtPos(doc.line(n).from + iw)
+                                    if (c0 && c1) { stepPx = Math.round((c1.left - c0.left) * 100) / 100; break }
+                                }
                             }
                         }
-                        return stepPx > 0 ? stepPx : -1
+
+                        if (fl < doc.lines) {
+                            var c0 = view.coordsAtPos(doc.line(fl).from)
+                            var c1 = view.coordsAtPos(doc.line(fl + 1).from)
+                            if (c0 && c1) lineHeight = Math.round(c1.top - c0.top)
+                        }
+
+                        return lineHeight > 0
+                            ? { stepPx: stepPx > 0 ? stepPx : -1, lineHeight: lineHeight }
+                            : (stepPx > 0 ? stepPx : -1)
                     },
-                    write: function(stepPx) {
+                    write: function(result) {
+                        var stepPx, lineHeight
+                        if (typeof result === 'number') {
+                            stepPx = result; lineHeight = 0
+                        } else if (result) {
+                            stepPx = result.stepPx; lineHeight = result.lineHeight || 0
+                        } else {
+                            stepPx = -1; lineHeight = 0
+                        }
                         if (typeof stepPx === 'number') {
-                            self._stepPx = stepPx > 0 ? stepPx : -1
-                            self._measurePending = true
-                            var v = self._view
+                            self.stepPx = stepPx > 0 ? stepPx : -1
+                            self.lineHeight = lineHeight
+                            self.measurePending = true
+                            var v = self.view
                             // Defer dispatch past the current update cycle
                             queueMicrotask(function() {
-                                if (v && self._measurePending) v.dispatch({})
+                                if (v && self.measurePending) v.dispatch({})
                             })
                         }
                     }
                 }
             }
 
-            _build(view) {
+            build(view) {
                 var sa = hideFirstIndent ? 1 : 0
                 var state = view.state
                 var iw = getIndentUnit(state)
@@ -737,72 +903,133 @@ function indentMarkerExtension({ highlightActiveBlock = true, hideFirstIndent = 
                 var doc = state.doc
                 var fl = doc.lineAt(view.viewport.from).number
                 var ll = doc.lineAt(view.viewport.to).number
-                var bl = Math.max(1, fl - 80), el = Math.min(doc.lines, ll + 80)
+                var bl = Math.max(1, fl - buffer), el = Math.min(doc.lines, ll + buffer)
 
-                // Compute visual indent levels
-                var lvls = new Int32Array(el - bl + 1)
-                var bk = new Uint8Array(el - bl + 1)
-                for (var n = bl; n <= el; n++) {
-                    var t = doc.line(n).text
-                    var b = t.trim() === ''
-                    bk[n - bl] = b ? 1 : 0
-                    lvls[n - bl] = b ? -1 : Math.floor(_ocImIndent(t, ts) / iw)
+                var cnt = el - bl + 1
+                var lvls = new Int32Array(cnt)
+                var bk = new Uint8Array(cnt)
+                var nextNB = new Int32Array(cnt)
+                for (var i = 0; i < cnt; i++) {
+                    var text = doc.line(bl + i).text
+                    var ind = 0
+                    var blank = true
+                    for (var c = 0; c < text.length; c++) {
+                        var ch = text.charCodeAt(c)
+                        if (ch === 32) ind++
+                        else if (ch === 9) ind += ts
+                        else { blank = false; break }
+                    }
+                    bk[i] = blank ? 1 : 0
+                    lvls[i] = blank ? 0 : Math.floor(ind / iw)
                 }
-                // Blank lines inherit the shallower of prev/next non-blank level
-                for (var n = bl; n <= el; n++) {
-                    if (!bk[n - bl]) continue
-                    var p = 0, nx = 0
-                    for (var x = n - 1; x >= bl; x--) if (!bk[x - bl]) { p = lvls[x - bl]; break }
-                    for (var x = n + 1; x <= el; x++) if (!bk[x - bl]) { nx = lvls[x - bl]; break }
-                    lvls[n - bl] = Math.min(p, nx)
+                var prevLvl = 0
+                for (var i = 0; i < cnt; i++) {
+                    if (bk[i]) lvls[i] = prevLvl
+                    else prevLvl = lvls[i]
+                }
+                var nextLvl = 0
+                for (var i = cnt - 1; i >= 0; i--) {
+                    if (bk[i]) lvls[i] = Math.min(lvls[i], nextLvl)
+                    else nextLvl = lvls[i]
+                }
+                var lastNB = -1
+                for (var i = cnt - 1; i >= 0; i--) {
+                    nextNB[i] = lastNB
+                    if (!bk[i]) lastNB = i
                 }
 
-                // Structural depth from CM6's fold system
-                var foldDepths = _foldDepth(state, fl, ll, doc)
+                var maxLvl = 0
+                for (var n = fl; n <= ll; n++) {
+                    var lv = lvls[n - bl]
+                    if (lv > maxLvl) maxLvl = lv
+                }
+                if (maxLvl <= sa) return Decoration.none
 
-                // Indent-unit width: measured or character-width fallback
-                var stepPx = this._stepPx
-                if (stepPx === null || stepPx <= 0)
-                    stepPx = iw * (view.defaultCharacterWidth || 8)
+                var keep = Math.min(maxLvl, 30)
 
-                // Highlight the active block (guide at cursor's deepest ancestor level)
-                var activeLvl
+                var activeLvl = -1
                 if (highlightActiveBlock) {
                     var cn = doc.lineAt(state.selection.main.head).number
-                    if (cn >= bl && cn <= el) {
-                        var cl = lvls[cn - bl]
-                        var cfd = foldDepths[cn - fl] || 0
-                        var cel = Math.max(cl, cfd)
-                        if (cel > sa) activeLvl = cel - 1
+                    if (cn >= fl && cn <= ll && lvls[cn - bl] > sa) {
+                        // replay the scope state up to the cursor line, only its guide column matters
+                        var sc = new Uint8Array(maxLvl)
+                        for (var i = 0; i <= cn - bl; i++) {
+                            var lv = lvls[i], isB = bk[i] === 1
+                            if (!isB) {
+                                for (var k = lv; k < maxLvl; k++) sc[k] = 0
+                            }
+                            if (bl + i === cn) {
+                                for (var k = Math.min(lv, keep) - 1; k >= sa; k--) {
+                                    if (sc[k]) { activeLvl = k; break }
+                                }
+                            }
+                            if (!isB) {
+                                var nbi = nextNB[i]
+                                if (nbi >= 0 && lvls[nbi] > lv && lv < maxLvl) sc[lv] = 1
+                            }
+                        }
                     }
                 }
+
+                var stepPx = this.stepPx
+                if (stepPx === null || stepPx <= 0)
+                    stepPx = iw * (view.defaultCharacterWidth || 8)
+                var lh = this.lineHeight
+                if (this.cacheStep !== stepPx || this.cacheLh !== lh) {
+                    this.cacheStep = stepPx
+                    this.cacheLh = lh
+                    this.styleCache.clear()
+                }
+
+                var pos = new Int32Array(keep)
+                for (var k = 0; k < keep; k++) pos[k] = Math.round(k * stepPx)
 
                 var builder = new RangeSetBuilder()
-                for (var n = fl; n <= ll; n++) {
-                    if (n < bl || n > el) continue
-                    var lv = lvls[n - bl]
-                    var fd = foldDepths[n - fl]
-                    var effectiveLv = Math.max(lv, fd)
-
-                    if (effectiveLv <= sa) continue
-                    var parts = []
-                    // Start from level 1 — level 0 (0 px) is never useful
-                    var startL = Math.max(sa, 1)
-                    for (var l = startL; l <= effectiveLv; l++) {
-                        if (l > lv) break   // cap at visual indent
-                        var pos = Math.round(l * stepPx)
-                        var cv = (activeLvl !== undefined && l === activeLvl)
-                            ? 'var(--oc-im-ca)' : 'var(--oc-im-c)'
-                        parts.push('linear-gradient(' + cv + ',' + cv + ') ' + pos + 'px 0/' + thickness + 'px 100% no-repeat')
+                var scopeOpen = new Uint8Array(maxLvl)
+                for (var n = bl; n <= el; n++) {
+                    var i2 = n - bl
+                    var lv2 = lvls[i2], isB2 = bk[i2] === 1
+                    if (!isB2) {
+                        for (var k = lv2; k < maxLvl; k++) scopeOpen[k] = 0
                     }
-                    if (!parts.length) continue
-                    var line = doc.line(n)
-                    builder.add(line.from, line.from, Decoration.line({
-                        class: 'cm-oc-im',
-                        attributes: { style: '--oc-im:' + parts.join(',') }
-                    }))
+                    if (n >= fl && n <= ll) {
+                        var mask = 0
+                        for (var k = sa; k < lv2 && k < keep; k++) {
+                            if (scopeOpen[k]) mask |= (1 << k)
+                        }
+                        if (mask) {
+                            var style = this.styleFor(mask, activeLvl, pos)
+                            var from = doc.line(n).from
+                            builder.add(from, from, Decoration.line({
+                                class: 'cm-oc-im',
+                                attributes: { style: style }
+                            }))
+                        }
+                    }
+                    if (!isB2) {
+                        var nbi2 = nextNB[i2]
+                        if (nbi2 >= 0 && lvls[nbi2] > lv2 && lv2 < maxLvl) scopeOpen[lv2] = 1
+                    }
                 }
                 return builder.finish()
+            }
+
+            styleFor(mask, activeLvl, pos) {
+                var hl = (activeLvl >= 0 && (mask & (1 << activeLvl))) ? activeLvl : -1
+                var key = mask + ':' + hl
+                var s = this.styleCache.get(key)
+                if (s !== undefined) return s
+                var parts = []
+                for (var k = 0; k < 30; k++) {
+                    if (!(mask & (1 << k))) continue
+                    var cv = (k === hl) ? 'var(--oc-im-ca)' : 'var(--oc-im-c)'
+                    parts.push('linear-gradient(' + cv + ',' + cv + ') ' + pos[k] + 'px 0/' + thickness + 'px 100% no-repeat')
+                }
+                s = '--oc-im:' + parts.join(',')
+                if (this.lineHeight > 0) s += ';--oc-lh:' + this.lineHeight + 'px'
+                if (this.styleCache.size > 1024) this.styleCache.clear()
+                this.styleCache.set(key, s)
+                return s
             }
         }, { decorations: v => v.decorations })
     ]
@@ -824,6 +1051,94 @@ const mergeDefaultConfig = {
 }
 
 // ============================================================
+// Merge scrollbar mirror — clones .cm-scroller scrollbar rules from
+// the active CM6 theme onto .cm-mergeView and #debug-rendered so
+// that all scrollbars share the same theme-aware appearance.
+// Also injects .cm-merge-revert button colours.
+// ============================================================
+function mirrorThemeScrollbar() {
+    var styles = document.querySelectorAll('style');
+    var themeStyle = null;
+    var themeText = null;
+
+    for (var i = 0; i < styles.length; i++) {
+        var text = styles[i].textContent || '';
+        if (text.indexOf('.cm-scroller::-webkit-scrollbar') === -1) continue;
+        themeStyle = styles[i];
+        themeText = text;
+        break;
+    }
+
+    var editorEl = document.querySelector('.cm-editor');
+    var contentEl = editorEl ? editorEl.querySelector('.cm-content') : null;
+    var cs = contentEl ? getComputedStyle(contentEl) : null;
+    var txt = cs ? cs.color : null;
+    var rgb = txt ? txt.match(/[\d.]+/g) : null;
+    var r, g, b;
+    if (rgb && rgb.length >= 3) { r = rgb[0]; g = rgb[1]; b = rgb[2]; }
+
+    if (r) {
+        var thumbColor = 'rgba(' + r + ',' + g + ',' + b + ',0.60)';
+        var thumbHover = 'rgba(' + r + ',' + g + ',' + b + ',0.70)';
+    } else {
+        var ocIsDark = isDarkMode();
+        var thumbColor = ocIsDark ? 'rgba(255,255,255,0.60)' : 'rgba(0,0,0,0.60)';
+        var thumbHover  = ocIsDark ? 'rgba(255,255,255,0.70)' : 'rgba(0,0,0,0.70)';
+    }
+
+    if (!themeText) return;
+
+    var parts = [], m;
+    var reWebkit = /([^{}]*)\.cm-scroller(::-webkit-scrollbar[^{]*)\{([^}]*)\}/gi;
+    while ((m = reWebkit.exec(themeText)) !== null) {
+        var body = m[3].replace(/;/g, ' !important;');
+        parts.push('.cm-mergeView' + m[2] + '{' + m[3] + '}');
+        parts.push('#debug-rendered' + m[2] + '{' + body + '}');
+        parts.push('#debug-rendered pre' + m[2] + '{' + body + '}');
+    }
+    // Clone Firefox rules
+    var reFF = /([^{}]*)\.cm-scroller\{([^}]*scrollbar-(?:width|color)[^}]*)\}/gi;
+    while ((m = reFF.exec(themeText)) !== null) {
+        var body = m[2];
+        var sw = body.match(/scrollbar-width\s*:\s*[^;]+;?/);
+        var sc = body.match(/scrollbar-color\s*:\s*[^;]+;?/);
+        if (sw || sc) {
+            var ffRule = (sw ? sw[0] : '') + (sc ? sc[0] : '');
+            parts.push('.cm-mergeView{' + ffRule + '}');
+            parts.push('#debug-rendered{' + ffRule + '}');
+            parts.push('#debug-rendered pre{' + ffRule + '}');
+        }
+    }
+
+    var gutterBg = r ? 'rgba(' + r + ',' + g + ',' + b + ',0.06)' : 'rgba(175,184,193,0.06)';
+    parts.push(
+        '.cm-merge-revert{background:' + gutterBg + '}' +
+        '.cm-merge-revert button{color:' + (r ? 'rgba(' + r + ',' + g + ',' + b + ',0.5)' : '#656d76') + '}' +
+        '.cm-merge-revert button:hover{color:' + (txt || '#1f2328') + ';background:' + (r ? 'rgba(' + r + ',' + g + ',' + b + ',0.12)' : 'rgba(175,184,193,0.2)') + '}'
+    );
+
+    var marker = '/*oc-merge-mirror*/';
+    var idx = themeStyle.textContent.indexOf(marker);
+    if (idx !== -1) {
+        themeStyle.textContent = themeStyle.textContent.substring(0, idx);
+    }
+
+    var thumbVal = thumbColor + ' !important';
+    var hoverVal = thumbHover + ' !important';
+    parts.push(
+        '.cm-editor .cm-scroller::-webkit-scrollbar-thumb,' +
+        '.cm-mergeView::-webkit-scrollbar-thumb,' +
+        '#debug-rendered::-webkit-scrollbar-thumb,' +
+        '#debug-rendered pre::-webkit-scrollbar-thumb{background:' + thumbVal + ';background-color:' + thumbVal + '}',
+        '.cm-editor .cm-scroller::-webkit-scrollbar-thumb:hover,' +
+        '.cm-mergeView::-webkit-scrollbar-thumb:hover,' +
+        '#debug-rendered::-webkit-scrollbar-thumb:hover,' +
+        '#debug-rendered pre::-webkit-scrollbar-thumb:hover{background:' + hoverVal + ';background-color:' + hoverVal + '}'
+    );
+    themeStyle.textContent += marker + parts.join('');
+}
+
+// ============================================================
 // Theme compartment — allows dynamic light/dark switching
 // ============================================================
 const themeCompartment = new Compartment
@@ -836,6 +1151,8 @@ function dispatchTheme(view, isDark) {
     view.dispatch({
         effects: themeCompartment.reconfigure(isDark ? githubDark : githubLight)
     })
+    // Mirror scrollbar rules into the new theme stylesheet
+    mirrorThemeScrollbar();
 }
 
 // ============================================================
@@ -867,81 +1184,18 @@ function toggleFullscreen(dom) {
 }
 
 // ============================================================
-// Theme observer — watch data-darkmode on <html> for all CM6 editors
+// Theme helpers — read data-darkmode set by common.js
 // ============================================================
-var _themeObserverInstalled = false;
 
-function startThemeObserver() {
-    if (_themeObserverInstalled || typeof MutationObserver === 'undefined') return;
-    _themeObserverInstalled = true;
-    var observer = new MutationObserver(function() {
-        var theme = localStorage.getItem('oc-theme') || 'auto';
-        var isDark;
-        if (theme === 'dark') isDark = true;
-        else if (theme === 'light') isDark = false;
-        else isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        switchHljsTheme(isDark);
-        var editors = document.querySelectorAll('.cm-editor');
-        for (var i = 0; i < editors.length; i++) {
-            var view = editors[i].cmView && editors[i].cmView.view;
-            if (view) {
-                try { dispatchTheme(view, isDark); } catch(e) {}
-            }
-        }
-    });
-    observer.observe(document.body, { attributes: true, attributeFilter: ['data-darkmode'], subtree: true });
+function isDarkMode() {
+    return document.documentElement.getAttribute('data-darkmode') === 'true';
 }
 
 // ============================================================
 // Markdown rendering (for debug log preview)
 // ============================================================
 
-var _hljsCSSInjected = false
-function injectHljsCSS() {
-    if (_hljsCSSInjected) return
-    _hljsCSSInjected = true
-    var theme = localStorage.getItem('oc-theme') || 'auto'
-    var isDark
-    if (theme === 'dark') isDark = true
-    else if (theme === 'light') isDark = false
-    else isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-    var style = document.createElement("style")
-    style.id = "hljs-theme"
-    style.textContent = isDark ? githubDarkCSS : githubLightCSS
-    document.head.appendChild(style)
-}
 
-function switchHljsTheme(isDark) {
-    if (!_hljsCSSInjected) { injectHljsCSS(); if (!_hljsCSSInjected) return }
-    var style = document.getElementById("hljs-theme")
-    if (style) style.textContent = isDark ? githubDarkCSS : githubLightCSS
-}
-
-function escapeHtml(s) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
-}
-
-marked.use({
-    breaks: true,
-    gfm: true,
-    silent: true,
-    renderer: {
-        code: function(token) {
-            var lang = token.lang || ""
-            if (lang && hljs.getLanguage(lang)) {
-                injectHljsCSS()
-                var result = hljs.highlight(token.text, { language: lang, ignoreIllegals: true })
-                return '<pre><code class="hljs language-' + lang + '">' + result.value + '</code></pre>'
-            }
-            return '<pre><code>' + escapeHtml(token.text) + '</code></pre>'
-        }
-    }
-})
-
-function renderMarkdown(text) {
-    if (!text) return ''
-    try { return marked.parse(text) } catch(e) { return text }
-}
 
 export {
     EditorView, EditorState, Compartment,
@@ -951,7 +1205,7 @@ export {
     defaultKeymap, history, historyKeymap, indentWithTab,
     toggleComment, foldKeymap,
     syntaxHighlighting, HighlightStyle, bracketMatching,
-    foldGutter, indentOnInput, StreamLanguage, indentUnit,
+    foldGutter, indentOnInput, StreamLanguage, indentUnit, ensureSyntaxTree, syntaxTree,
     yaml, markdown, shell, properties,
     linter, lintGutter, yamlLinter,
     search, searchKeymap, highlightSelectionMatches,
@@ -960,10 +1214,9 @@ export {
     githubDark, githubLight,
     MergeView,
     logLanguage, logHighlightStyle,
-    baseExtensions, placeholderExtension, indentMarkerExtension,
-    topSearchExtension, mergeDefaultConfig,
+    baseExtensions, parseAheadExtension, placeholderExtension, indentMarkerExtension,
+    topSearchExtension, mergeDefaultConfig, mirrorThemeScrollbar,
     themeExtension, dispatchTheme,
-    startThemeObserver,
-    renderMarkdown,
+    switchHljsTheme, ensureMarkdown, renderMarkdown,
     getActiveEditor, toggleFullscreen
 }

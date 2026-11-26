@@ -1,10 +1,8 @@
 local api = require "luci.passwall.api"
-local uci = api.uci
-local appname = "passwall"
+api.set_default_cbi()
 
-m = Map(appname)
+m = Map()
 m.redirect = api.url("node_subscribe")
-api.set_apply_on_parse(m)
 
 if not arg[1] or not m:get(arg[1]) then
 	luci.http.redirect(m.redirect)
@@ -14,7 +12,7 @@ function m.on_before_save(self)
 	self:del(arg[1], "md5")
 end
 
-m:append(Template(appname .. "/cbi/nodes_listvalue_com"))
+m:appendTemplate("/cbi/nodes_listvalue_com")
 
 local has_ss_rust = api.is_finded("sslocal")
 local has_singbox = api.finded_com("sing-box")
@@ -25,6 +23,7 @@ local trojan_type = {}
 local vmess_type = {}
 local vless_type = {}
 local hysteria2_type = {}
+local other_type = {}
 local xray_version = api.get_app_version("xray")
 if has_ss_rust then
 	local s = "shadowsocks-rust"
@@ -37,6 +36,7 @@ if has_singbox then
 	table.insert(vmess_type, s)
 	table.insert(vless_type, s)
 	table.insert(hysteria2_type, s)
+	table.insert(other_type, s)
 end
 if has_xray then
 	local s = "xray"
@@ -44,6 +44,7 @@ if has_xray then
 	table.insert(ss_type, s)
 	table.insert(vmess_type, s)
 	table.insert(vless_type, s)
+	table.insert(other_type, s)
 	if api.compare_versions(xray_version, ">=", "26.1.13") then
 		table.insert(hysteria2_type, s)
 	end
@@ -78,7 +79,7 @@ o.validate = function(self, value, section)
 		return nil, translate("Remark cannot be empty.")
 	end
 	local duplicate = false
-	m.uci:foreach(appname, "subscribe_list", function(e)
+	m:foreach("subscribe_list", function(e)
 		if e[".name"] ~= section and e["remark"] and e["remark"]:lower() == value:lower() then
 			duplicate = true
 			return false
@@ -92,9 +93,9 @@ end
 o.write = function(self, section, value)
 	local old = m:get(section, self.option) or ""
 	if old ~= value then
-		m.uci:foreach(appname, "nodes", function(e)
+		m:foreach("nodes", function(e)
 			if e["group"] and e["group"]:lower() == old:lower() then
-				m.uci:set(appname, e[".name"], "group", value)
+				self.map:set(e[".name"], "group", value)
 			end
 			if e["protocol"] and (e["protocol"] == "_balancing" or e["protocol"] == "_urltest") and e["node_group"] then
 				local gs = ""
@@ -106,7 +107,7 @@ o.write = function(self, section, value)
 					end
 				end
 				gs = api.trim(gs)
-				m.uci:set(appname, e[".name"], "node_group", gs)
+				self.map:set(e[".name"], "node_group", gs)
 			end
 		end)
 	end
@@ -126,7 +127,9 @@ end
 o = s:option(ListValue, "domain_resolver", translate("Domain DNS Resolve"))
 o.description = translate("If the node address is a domain name, this DNS will be used for resolution.") .. "<br>" ..
 		translate("Supports only Xray or Sing-box node types.") .. "<br>" .. string.format('<font color="red">%s</font>',
-		translate("Note: For node-specific DNS only. Keep Auto to avoid extra overhead."))
+		translate("Note: Auto tries to extract node DNS from Clash subscriptions. Disable skips extraction."))
+o.default = ""
+o:value("disable", translate("Disable"))
 o:value("", translate("Auto"))
 o:value("tcp", "TCP")
 o:value("udp", "UDP")
@@ -153,6 +156,12 @@ o:value("UseIPv4v6", translate("Prefer IPv4"))
 o:value("UseIPv6v4", translate("Prefer IPv6"))
 o:value("UseIPv4", translate("IPv4 Only"))
 o:value("UseIPv6", translate("IPv6 Only"))
+
+o = s:option(Flag, "allowInsecure", translate("allowInsecure"))
+o.default = "0"
+o.rmempty = false
+o.description = translate("Whether unsafe connections are allowed. When checked, Certificate validation will be skipped.") .. "<br>" ..
+		translate("Used when the node link does not include this parameter.")
 
 o = s:option(ListValue, "filter_keyword_mode", translate("Filter keyword Mode"))
 o.default = "5"
@@ -216,26 +225,30 @@ if #hysteria2_type > 0 then
 	for key, value in pairs(hysteria2_type) do
 		o:value(value)
 	end
+end
 
+if #other_type > 0 then
+	o = s:option(ListValue, "other_type", translatef("%s Node Use Type", translate("Other")))
+	o.default = "global"
+	o:value("global", translate("Use global config"))
+	for key, value in pairs(other_type) do
+		o:value(value)
+	end
+end
+
+if #hysteria2_type > 0 then
 	o = s:option(Value, "hysteria_up_mbps", "Hy/Hy2 " .. translate("Max upload Mbps"))
 	o.datatype = "uinteger"
-	o.default = "100"
 
 	o = s:option(Value, "hysteria_down_mbps", "Hy/Hy2 " .. translate("Max download Mbps"))
 	o.datatype = "uinteger"
-	o.default = "100"
 end
 
 o = s:option(Flag, "boot_update", translate("Update Once on Boot"), translate("Updates the subscription the first time PassWall runs automatically after each system boot."))
 o.default = 0
 
----- Enable auto update subscribe
-o = s:option(Flag, "auto_update", translate("Enable auto update subscribe"))
-o.default = 0
-o.rmempty = false
-
----- Week Update
-o = s:option(ListValue, "week_update", translate("Update Mode"))
+o = s:option(ListValue, "update_week_mode", translate("Auto Update Mode"))
+o:value("", translate("Disable"))
 o:value(8, translate("Loop Mode"))
 o:value(7, translate("Every day"))
 o:value(1, translate("Every Monday"))
@@ -245,29 +258,24 @@ o:value(4, translate("Every Thursday"))
 o:value(5, translate("Every Friday"))
 o:value(6, translate("Every Saturday"))
 o:value(0, translate("Every Sunday"))
-o.default = 7
-o:depends("auto_update", true)
-o.rmempty = true
 
----- Time Update
-o = s:option(ListValue, "time_update", translate("Update Time(every day)"))
-for t = 0, 23 do o:value(t, t .. ":00") end
-o.default = 0
-o:depends("week_update", "0")
-o:depends("week_update", "1")
-o:depends("week_update", "2")
-o:depends("week_update", "3")
-o:depends("week_update", "4")
-o:depends("week_update", "5")
-o:depends("week_update", "6")
-o:depends("week_update", "7")
-o.rmempty = true
+o = s:option(Value, "update_time_mode", translate("Update Time"))
+for t = 0, 23 do o:value(t .. ":00") end
+o.default = "0:00"
+o.datatype = "timehhmm"
+o:depends("update_week_mode", "0")
+o:depends("update_week_mode", "1")
+o:depends("update_week_mode", "2")
+o:depends("update_week_mode", "3")
+o:depends("update_week_mode", "4")
+o:depends("update_week_mode", "5")
+o:depends("update_week_mode", "6")
+o:depends("update_week_mode", "7")
 
----- Interval Update
-o = s:option(ListValue, "interval_update", translate("Update Interval(hour)"))
+o = s:option(ListValue, "update_interval_mode", translate("Update Interval(hour)"))
 for t = 1, 24 do o:value(t, t .. " " .. translate("hour")) end
 o.default = 2
-o:depends("week_update", "8")
+o:depends("update_week_mode", "8")
 o.rmempty = true
 
 o = s:option(ListValue, "access_mode", translate("Subscribe URL Access Method"))
@@ -280,9 +288,8 @@ o = s:option(Value, "user_agent", translate("User-Agent"))
 o.default = "passwall"
 o:value("passwall", "PassWall")
 o:value("v2rayN/9.99", "v2rayN")
-o:value("clash.meta", "Clash.Meta")
-o:value("Clash", "Clash")
-o:value("curl", "Curl")
+o:value("clash.meta/v9.99.99", "Clash.Meta")
+o:value("Shadowrocket/9999 CFNetwork/3896.100.1.2.1 Darwin/27.0.0 iPhone19,7", "Shadowrocket")
 o:value("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Linux")
 o:value("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Windows")
 
@@ -299,13 +306,13 @@ descrStr = translate(descrStr) .. "<br>" .. translate("Only support a layer of p
 o1 = s:option(ListValue, "preproxy_node", translate("Preproxy Node"))
 o1:depends({ ["chain_proxy"] = "1" })
 o1.description = descrStr
-o1.template = appname .. "/cbi/nodes_listvalue"
+o1.template = m:template_path("/cbi/nodes_listvalue")
 o1.group = {}
 
 o2 = s:option(ListValue, "to_node", translate("Landing Node"))
 o2:depends({ ["chain_proxy"] = "2" })
 o2.description = descrStr
-o2.template = appname .. "/cbi/nodes_listvalue"
+o2.template = m:template_path("/cbi/nodes_listvalue")
 o2.group = {}
 
 o3 = s:option(Value, "outbound_iface", translate("Outbound Interface"))
@@ -325,4 +332,4 @@ for k, v in pairs(nodes_table) do
 	end
 end
 
-return m
+return api.return_map(m)

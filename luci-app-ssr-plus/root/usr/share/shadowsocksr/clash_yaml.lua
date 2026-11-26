@@ -218,6 +218,7 @@ local function strip_runtime_conflicts(doc)
 	doc.port = nil
 	doc["external-controller"] = nil
 	doc.secret = nil
+	doc.authentication = nil
 	doc["allow-lan"] = nil
 	if type(doc.dns) == "table" then
 		doc.dns["fake-ip-range"] = nil
@@ -419,7 +420,12 @@ local function get_server_field(sid, option, default)
 	return value
 end
 
+local function ipv6_enabled()
+	return uci:get_first("shadowsocksr", "global", "ipv6_support", "0") == "1"
+end
+
 local function get_filter_aaaa()
+	if ipv6_enabled() then return "0" end
 	local value = uci:get_first("shadowsocksr", "global", "filter_aaaa", "1")
 	if value == nil or value == "" then
 		value = uci:get_first("shadowsocksr", "global", "mosdns_ipv6", "1")
@@ -485,7 +491,8 @@ local function build_tuic_runtime_doc(sid, local_port, socks_port, mode)
 
 	local doc = {
 		["allow-lan"] = true,
-		["bind-address"] = "0.0.0.0",
+		["bind-address"] = ipv6_enabled() and "*" or "0.0.0.0",
+		ipv6 = ipv6_enabled(),
 		mode = "rule",
 		["log-level"] = "silent",
 		["find-process-mode"] = "off",
@@ -520,6 +527,23 @@ local function build_tuic_runtime_doc(sid, local_port, socks_port, mode)
 			doc["socks-port"] = socks_listen
 		end
 	end
+
+	if doc["socks-port"] and doc["socks-port"] > 0 then
+		local socks5_auth = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_auth", "noauth")
+		if socks5_auth == "password" then
+			local socks5_user = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_user", "")
+			local socks5_pass = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_pass", "")
+
+			if socks5_user == "" or socks5_pass == "" then
+				io.stderr:write("警告：SOCKS5 代理未完整配置用户名或密码，已自动降级为无认证模式 (noauth)！\n")
+			else
+				doc["authentication"] = {
+					string.format("%s:%s", socks5_user, socks5_pass)
+				}
+			end
+		end
+	end
+
 
 	return doc
 end
@@ -717,6 +741,115 @@ local function apply_trojan_tls_options(proxy, sid)
 	end
 end
 
+-- Xray camel → mihomo kebab（反向字段表）
+local XHTTP_FIELD_MAP = {
+	headers               = "headers",
+	xPaddingBytes         = "x-padding-bytes",
+	noGRPCHeader          = "no-grpc-header",
+	xPaddingObfsMode      = "x-padding-obfs-mode",
+	xPaddingKey           = "x-padding-key",
+	xPaddingHeader        = "x-padding-header",
+	xPaddingPlacement     = "x-padding-placement",
+	xPaddingMethod        = "x-padding-method",
+	uplinkHTTPMethod      = "uplink-http-method",
+	sessionIDPlacement    = "session-placement",
+	sessionIDKey          = "session-key",
+	sessionIDTable        = "session-table",
+	sessionIDLength       = "session-length",
+	seqPlacement          = "seq-placement",
+	seqKey                = "seq-key",
+	uplinkDataPlacement   = "uplink-data-placement",
+	uplinkDataKey         = "uplink-data-key",
+	uplinkChunkSize       = "uplink-chunk-size",
+	scMaxEachPostBytes    = "sc-max-each-post-bytes",
+	scMinPostsIntervalMs  = "sc-min-posts-interval-ms",
+}
+
+-- xmux 内部 camel → kebab
+local XMUX_FIELD_MAP = {
+	maxConcurrency     = "max-concurrency",
+	maxConnections     = "max-connections",
+	cMaxReuseTimes     = "c-max-reuse-times",
+	hMaxRequestTimes   = "h-max-request-times",
+	hMaxReusableSecs   = "h-max-reusable-secs",
+	hKeepAlivePeriod   = "h-keep-alive-period",
+}
+
+local function convert_xhttp_pair(key, value)
+	-- xmux → reuse-settings
+	if key == "xmux" and type(value) == "table" then
+		local out = {}
+		for k, v in pairs(value) do
+			local mapped = XMUX_FIELD_MAP[k]
+			if mapped then
+				out[mapped] = v
+			end
+		end
+		if next(out) == nil then return nil, nil end
+		return "reuse-settings", out
+	end
+
+	-- downloadSettings → download-settings（只保留 xhttp 部分）
+	if key == "downloadSettings" and type(value) == "table" then
+		local out = {}
+		for k, v in pairs(value) do
+			if k == "xmux" then
+				local nk, nv = convert_xhttp_pair(k, v)
+				if nk then out[nk] = nv end
+			elseif k == "path" or k == "host" then
+				out[k] = v
+			elseif XHTTP_FIELD_MAP[k] then
+				if not (k == "headers" and type(v) == "table" and next(v) == nil) then
+					out[XHTTP_FIELD_MAP[k]] = v
+				end
+			end
+		end
+		if next(out) == nil then return nil, nil end
+		return "download-settings", out
+	end
+
+	if key == "headers" and type(value) == "table" then
+		if next(value) == nil then
+			return nil, nil
+		end
+		return "headers", value
+	end
+
+	local mapped = XHTTP_FIELD_MAP[key]
+	if mapped then
+		return mapped, value
+	end
+
+	return nil, nil
+end
+
+local function apply_xhttp_extra(opts, sid)
+	if get_server_field(sid, "enable_xhttp_extra", "0") ~= "1" then
+		return
+	end
+	local raw = get_server_field(sid, "xhttp_extra", "")
+	if raw == "" or not ok_jsonc or not jsonc then
+		return
+	end
+
+	local decoded = nixio.bin.b64decode(raw)
+	if not decoded then
+		return
+	end
+
+	local extra = jsonc.parse(decoded)
+	if type(extra) ~= "table" then
+		return
+	end
+
+	for k, v in pairs(extra) do
+		local new_key, new_val = convert_xhttp_pair(k, v)
+		if new_key then
+			opts[new_key] = new_val
+		end
+	end
+end
+
 local function apply_v2ray_transport_options(proxy, sid)
 	local transport = get_server_field(sid, "transport", "raw")
 	if transport == "raw" or transport == "tcp" or transport == "" then
@@ -759,6 +892,7 @@ local function apply_v2ray_transport_options(proxy, sid)
 			host = string_or_nil(get_server_field(sid, "xhttp_host", "")),
 			mode = string_or_nil(get_server_field(sid, "xhttp_mode", ""))
 		}
+		apply_xhttp_extra(proxy["xhttp-opts"], sid)
 	end
 end
 
@@ -832,6 +966,13 @@ local function build_v2ray_mihomo_proxy(sid)
 		proxy.cipher = get_server_field(sid, "encrypt_method_ss", "none")
 		proxy.password = get_server_field(sid, "password", "")
 		build_shadowsocks_plugin(proxy, sid)
+	elseif protocol == "anytls" then
+		proxy.type = "anytls"
+		proxy.password = get_server_field(sid, "password", "")
+		apply_trojan_tls_options(proxy, sid)
+		proxy["idle-session-check-interval"] = number_or_nil(get_server_field(sid, "anytls_idle_session_check_interval", ""))
+		proxy["idle-session-timeout"] = number_or_nil(get_server_field(sid, "anytls_idle_session_timeout", ""))
+		proxy["min-idle-session"] = number_or_nil(get_server_field(sid, "anytls_min_idle_session", ""))
 	elseif protocol == "hysteria2" then
 		proxy.type = "hysteria2"
 		proxy.password = get_server_field(sid, "hy2_auth", "")
@@ -898,7 +1039,9 @@ local function build_v2ray_mihomo_proxy(sid)
 	elseif protocol == "snell" then
 		proxy.type = "snell"
 		proxy.psk = get_server_field(sid, "snell_psk", "")
-		proxy.version = number_or_nil(get_server_field(sid, "snell_version", ""))
+		proxy.version = tonumber(get_server_field(sid, "snell_version", "4")) or 4
+		proxy.reuse = get_server_field(sid, "snell_reuse", "0") == "1"
+		proxy.udp = proxy.version >= 3
 		local obfs_mode = string_or_nil(get_server_field(sid, "snell_obfs", ""))
 		local obfs_host = string_or_nil(get_server_field(sid, "snell_obfs_host", ""))
 		if obfs_mode or obfs_host then
@@ -926,7 +1069,8 @@ local function build_single_proxy_runtime_doc(proxy, local_port, socks_port, mod
 	local socks_listen = tonumber(socks_port)
 	local doc = {
 		["allow-lan"] = true,
-		["bind-address"] = "0.0.0.0",
+		["bind-address"] = ipv6_enabled() and "*" or "0.0.0.0",
+		ipv6 = ipv6_enabled(),
 		mode = "rule",
 		["log-level"] = "silent",
 		["find-process-mode"] = "off",
@@ -961,6 +1105,23 @@ local function build_single_proxy_runtime_doc(proxy, local_port, socks_port, mod
 			doc["socks-port"] = socks_listen
 		end
 	end
+	if doc["socks-port"] and doc["socks-port"] > 0 then
+		local socks5_auth = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_auth", "noauth")
+		if socks5_auth == "password" then
+			local socks5_user = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_user", "")
+			local socks5_pass = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_pass", "")
+
+			if socks5_user == "" or socks5_pass == "" then
+				io.stderr:write("警告：SOCKS5 代理未完整配置用户名或密码，已自动降级为无认证模式 (noauth)！\n")
+			else
+				doc["authentication"] = {
+					string.format("%s:%s", socks5_user, socks5_pass)
+				}
+			end
+		end
+	end
+
+
 	return doc
 end
 
@@ -1201,7 +1362,8 @@ local function build_shadowsocks_runtime_doc(sid, local_port, socks_port, mode)
 
 	local doc = {
 		["allow-lan"] = true,
-		["bind-address"] = "0.0.0.0",
+		["bind-address"] = ipv6_enabled() and "*" or "0.0.0.0",
+		ipv6 = ipv6_enabled(),
 		mode = "rule",
 		["log-level"] = "silent",
 		["find-process-mode"] = "off",
@@ -1238,6 +1400,23 @@ local function build_shadowsocks_runtime_doc(sid, local_port, socks_port, mode)
 			doc["socks-port"] = socks_listen
 		end
 	end
+
+	if doc["socks-port"] and doc["socks-port"] > 0 then
+		local socks5_auth = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_auth", "noauth")
+		if socks5_auth == "password" then
+			local socks5_user = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_user", "")
+			local socks5_pass = uci:get_first("shadowsocksr", "socks5_proxy", "socks5_pass", "")
+
+			if socks5_user == "" or socks5_pass == "" then
+				io.stderr:write("警告：SOCKS5 代理未完整配置用户名或密码，已自动降级为无认证模式 (noauth)！\n")
+			else
+				doc["authentication"] = {
+					string.format("%s:%s", socks5_user, socks5_pass)
+				}
+			end
+		end
+	end
+
 
 	return doc
 end

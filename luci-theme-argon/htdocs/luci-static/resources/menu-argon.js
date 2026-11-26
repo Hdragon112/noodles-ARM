@@ -16,6 +16,15 @@ const SlideAnimations = {
 		slow: 600
 	},
 
+	getDuration: function(duration) {
+		if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+			return 0;
+
+		return typeof duration === 'string' ?
+			(this.durations[duration] || this.durations.normal) :
+			(duration || this.durations.normal);
+	},
+
 	/**
 	 * Map to track running animations and their cleanup functions
 	 */
@@ -37,9 +46,7 @@ const SlideAnimations = {
 		this.stop(element);
 		
 		// Convert duration string to milliseconds
-		const animDuration = typeof duration === 'string' ? 
-			this.durations[duration] || this.durations.normal : 
-			(duration || this.durations.normal);
+		const animDuration = this.getDuration(duration);
 		
 		// Store original styles
 		const originalStyles = {
@@ -103,9 +110,7 @@ const SlideAnimations = {
 		this.stop(element);
 		
 		// Convert duration string to milliseconds
-		const animDuration = typeof duration === 'string' ? 
-			this.durations[duration] || this.durations.normal : 
-			(duration || this.durations.normal);
+		const animDuration = this.getDuration(duration);
 		
 		// Store original styles
 		const originalStyles = {
@@ -196,7 +201,107 @@ return baseclass.extend({
 	 * Load menu data and trigger rendering
 	 */
 	__init__: function () {
+		this.bindSidebarToggle();
+		this.patchDynamicListFocus();
 		ui.menu.load().then(L.bind(this.render, this));
+	},
+
+	patchDynamicListFocus: function () {
+		var prototype = ui.Dropdown && ui.Dropdown.prototype;
+		var setFocus = prototype && prototype.setFocus;
+		if (typeof setFocus !== 'function' || setFocus.argonDynamicListGuard)
+			return;
+
+		var guardedFocus = function (node, item) {
+			// A DynamicList change handler can consume a newly created option
+			// before Dropdown.createItems() tries to scroll and focus it.
+			if (item && !item.parentNode && node && node.closest('.cbi-dynlist'))
+				return;
+			return setFocus.apply(this, arguments);
+		};
+		guardedFocus.argonDynamicListGuard = true;
+		prototype.setFocus = guardedFocus;
+	},
+
+	bindSidebarToggle: function () {
+		const trigger = document.querySelector('.showSide');
+		const sidebar = document.querySelector('#mainmenu');
+		const close = document.querySelector('.sidebar-close');
+		const mask = document.querySelector('.darkMask');
+		const pane = document.querySelector('.main-right');
+		if (!trigger || !sidebar || !close || !mask || !pane)
+			return;
+
+		const mobile = window.matchMedia('(max-width: 768px)');
+		let open = false;
+		let background = [];
+		function setOpen(show) {
+			open = show && mobile.matches;
+			for (const node of [trigger, sidebar, mask, pane])
+				node.classList.toggle('active', open);
+			trigger.setAttribute('aria-expanded', String(open));
+			sidebar.inert = mobile.matches && !open;
+
+			if (open) {
+				sidebar.setAttribute('role', 'dialog');
+				sidebar.setAttribute('aria-modal', 'true');
+				// Allow closing immediately, even while LuCI is loading the menu tree.
+				sidebar.style.display = '';
+				close.focus();
+				background = Array.from(document.querySelectorAll(
+					'.skip-link, .main-right > header, #maincontent, .argon-background-layer'
+				)).filter(node => !node.inert);
+				background.forEach(node => { node.inert = true; });
+			} else {
+				sidebar.setAttribute('role', 'navigation');
+				sidebar.removeAttribute('aria-modal');
+				background.forEach(node => { node.inert = false; });
+				background = [];
+			}
+		}
+
+		function dismiss() {
+			setOpen(false);
+			trigger.focus();
+		}
+
+		setOpen(false);
+		trigger.addEventListener('click', () => setOpen(true));
+		close.addEventListener('click', dismiss);
+		mask.addEventListener('click', dismiss);
+		// LuCI focuses its overlay when an asynchronous dialog opens. Release
+		// the drawer without moving focus away from the incoming dialog.
+		document.addEventListener('focusin', ev => {
+			if (open && ev.target.closest('#modal_overlay'))
+				setOpen(false);
+		});
+		document.addEventListener('keydown', ev => {
+			if (!open || document.body.classList.contains('modal-overlay-active'))
+				return;
+			if (ev.key === 'Tab') {
+				const items = sidebar.querySelectorAll('a[href]:not([inert] *), button:not([inert] *)');
+				const first = items[0], last = items[items.length - 1];
+				if (document.activeElement === (ev.shiftKey ? first : last)) {
+					ev.preventDefault();
+					(ev.shiftKey ? last : first).focus();
+				}
+			} else if (ev.key === 'Escape') {
+				ev.preventDefault();
+				dismiss();
+			}
+		});
+		mobile.addEventListener('change', () => {
+			const hadSidebarFocus = sidebar.contains(document.activeElement);
+			const wasMobileControl = document.activeElement === close || document.activeElement === trigger;
+			setOpen(false);
+			if (mobile.matches && hadSidebarFocus)
+				trigger.focus();
+			else if (!mobile.matches && wasMobileControl) {
+				const target = sidebar.style.display === 'none' ? document.querySelector('#maincontent')
+					: sidebar.querySelector('.nav button, .nav a') || sidebar.querySelector('.brand');
+				target.focus();
+			}
+		});
 	},
 
 	/**
@@ -212,24 +317,14 @@ return baseclass.extend({
 		// Render tab menu if we're deep enough in the navigation hierarchy
 		if (L.env.dispatchpath.length >= 3) {
 			for (var i = 0; i < 3 && node; i++) {
-				node = node.children[L.env.dispatchpath[i]];
+				// A cached menu can predate the current page's route.
+				node = node.children ? node.children[L.env.dispatchpath[i]] : null;
 				url = url + (url ? '/' : '') + L.env.dispatchpath[i];
 			}
 
 			if (node) {
 				this.renderTabMenu(node, url);
 			}
-		}
-
-		// Attach event listeners for sidebar toggle functionality
-		var sidebarToggle = document.querySelector('a.showSide');
-		var darkMask = document.querySelector('.darkMask');
-		
-		if (sidebarToggle) {
-			sidebarToggle.addEventListener('click', ui.createHandlerFn(this, 'handleSidebarToggle'));
-		}
-		if (darkMask) {
-			darkMask.addEventListener('click', ui.createHandlerFn(this, 'handleSidebarToggle'));
 		}
 	},
 
@@ -239,48 +334,23 @@ return baseclass.extend({
 	 * @param {Event} ev - Click event from menu item
 	 */
 	handleMenuExpand: function (ev) {
-		var target = ev.target;
-		var slide = target.parentNode;
-		var slideMenu = target.nextElementSibling;
-		var shouldCollapse = false;
-
-		// Close all currently active submenus
-		var activeMenus = document.querySelectorAll('.main .main-left .nav > li > ul.active');
-		activeMenus.forEach(function (ul) {
-			// Stop any running animations and slide up
-			SlideAnimations.stop(ul);
-			// Remove active classes immediately when starting slideUp animation
-			ul.classList.remove('active');
+		const button = ev.currentTarget;
+		const submenu = button.nextElementSibling;
+		const expand = button.getAttribute('aria-expanded') !== 'true';
+		document.querySelectorAll('#mainmenu .slide-menu.active').forEach(ul => {
+			ul.previousElementSibling.setAttribute('aria-expanded', 'false');
 			ul.previousElementSibling.classList.remove('active');
+			ul.inert = true;
+			ul.classList.remove('active');
 			SlideAnimations.slideUp(ul, 'fast');
-			
-			// Check if we're clicking on an already open menu (should collapse it)
-			if (!shouldCollapse && ul === slideMenu) {
-				shouldCollapse = true;
-			}
 		});
-
-		// Exit if there's no submenu to show
-		if (!slideMenu) {
-			return;
+		if (expand) {
+			button.setAttribute('aria-expanded', 'true');
+			button.classList.add('active');
+			submenu.inert = false;
+			submenu.classList.add('active');
+			SlideAnimations.slideDown(submenu, 'fast');
 		}
-
-		// Open the submenu if it's not already open
-		if (!shouldCollapse) {
-			// Find the slide menu within the slide element
-			var slideMenuElement = slide.querySelector(".slide-menu");
-			if (slideMenuElement) {
-				// Add active classes immediately when starting slideDown animation
-				slideMenu.classList.add('active');
-				target.classList.add('active');
-				SlideAnimations.slideDown(slideMenuElement, 'fast');
-			}
-			target.blur(); // Remove focus from the clicked element
-		}
-		
-		// Prevent default link behavior and event bubbling
-		ev.preventDefault();
-		ev.stopPropagation();
 	},
 
 	/**
@@ -291,6 +361,20 @@ return baseclass.extend({
 	 * @param {number} level - Current nesting level (0-based)
 	 * @returns {Element} - Generated menu element
 	 */
+	renderMenuIcon: function (name) {
+		var catalog = document.querySelector('meta[name="argon-menu-icons"]');
+		var icons = catalog ? (catalog.getAttribute('content') || '').split(/\s+/) : [];
+		var filename = /^[a-zA-Z0-9_-]+$/.test(name) && icons.indexOf(name + '.svg') !== -1
+			? name + '.svg' : 'default.svg';
+
+		return E('span', {
+			'class': 'menu-icon',
+			'aria-hidden': 'true',
+			'data-icon': filename.slice(0, -4),
+			'style': '--menu-icon: url("' + L.media('icon', filename) + '")'
+		});
+	},
+
 	renderMainMenu: function (tree, url, level) {
 		var currentLevel = (level || 0) + 1;
 		var menuContainer = E('ul', { 'class': level ? 'slide-menu' : 'nav' });
@@ -313,27 +397,32 @@ return baseclass.extend({
 			var submenu = this.renderMainMenu(child, url + '/' + child.name, currentLevel);
 			var hasChildren = submenu.children.length > 0;
 			
-			// Determine CSS classes based on state
-			var slideClass = hasChildren ? 'slide' : null;
+			var slideClass = hasChildren ? 'slide' : '';
 			var menuClass = hasChildren ? 'menu' : 'food';
-			
 			if (isActive) {
-				menuContainer.classList.add('active');
-				slideClass += " active";
-				menuClass += " active";
+				slideClass = (slideClass + ' active').trim();
+				menuClass += ' active';
+			}
+			if (hasChildren) {
+				submenu.id = 'argon-submenu-' + child.name;
+				submenu.classList.toggle('active', isActive);
+				submenu.inert = !isActive;
 			}
 
-			// Create menu item with link and submenu
-			var menuItem = E('li', { 'class': slideClass }, [
-				E('a', {
-					'href': L.url(url, child.name),
-					'click': (currentLevel === 1) ? ui.createHandlerFn(this, 'handleMenuExpand') : null,
+			var menuItem = E('li', { 'class': slideClass || null }, [
+				E(hasChildren ? 'button' : 'a', {
+					'type': hasChildren ? 'button' : null,
+					'href': hasChildren ? null : L.url(url, child.name),
+					'click': hasChildren ? this.handleMenuExpand.bind(this) : null,
+					'aria-controls': hasChildren ? submenu.id : null,
+					'aria-expanded': hasChildren ? String(isActive) : null,
+					'aria-current': !hasChildren && isActive ? 'page' : null,
 					'class': menuClass,
-					'data-title': child.title.replace(/ /g, "_"), // More robust space replacement
-				}, [_(child.title)]),
+					'data-title': child.title.replace(/ /g, "_")
+				}, currentLevel === 1 ? [this.renderMenuIcon(child.name), _(child.title)] : [_(child.title)]),
 				submenu
 			]);
-			
+
 			menuContainer.appendChild(menuItem);
 		}
 
@@ -415,47 +504,10 @@ return baseclass.extend({
 			container.style.display = '';
 
 			// Recursively render nested tab menus if there's an active node
-			if (activeNode) {
-				var nestedTabs = this.renderTabMenu(activeNode, url + '/' + activeNode.name, currentLevel);
-				if (nestedTabs.children.length > 0) {
-					container.appendChild(nestedTabs);
-				}
-			}
+			if (activeNode)
+				this.renderTabMenu(activeNode, url + '/' + activeNode.name, currentLevel);
 		}
 
 		return tabContainer;
-	},
-
-	/**
-	 * Handle sidebar toggle functionality
-	 * Toggles the mobile/responsive sidebar menu visibility
-	 * @param {Event} ev - Click event from sidebar toggle button or dark mask
-	 */
-	handleSidebarToggle: function (ev) {
-		var showSideButton = document.querySelector('a.showSide');
-		var sidebar = document.querySelector('#mainmenu');
-		var darkMask = document.querySelector('.darkMask');
-		var scrollbarArea = document.querySelector('.main-right');
-
-		// Check if any required elements are missing
-		if (!showSideButton || !sidebar || !darkMask || !scrollbarArea) {
-			console.warn('Sidebar toggle elements not found');
-			return;
-		}
-
-		// Toggle sidebar visibility and related states
-		if (showSideButton.classList.contains('active')) {
-			// Close sidebar
-			showSideButton.classList.remove('active');
-			sidebar.classList.remove('active');
-			scrollbarArea.classList.remove('active');
-			darkMask.classList.remove('active');
-		} else {
-			// Open sidebar
-			showSideButton.classList.add('active');
-			sidebar.classList.add('active');
-			scrollbarArea.classList.add('active');
-			darkMask.classList.add('active');
-		}
 	}
 });

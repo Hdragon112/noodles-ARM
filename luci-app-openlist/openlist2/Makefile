@@ -7,13 +7,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=openlist2
-PKG_VERSION:=4.2.3
-PKG_WEB_VERSION:=4.2.3
+PKG_VERSION:=4.2.10
+PKG_WEB_VERSION:=4.2.10
 PKG_RELEASE:=1
 
 PKG_SOURCE:=openlist-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/OpenListTeam/OpenList/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=3b41170944b5fdbd59a6b1facf438a7f73549de19580858098deb32a797946e3
+PKG_HASH:=4e45a675ee4719a98038a64f0f2095bd82146bb7342466f42d2407f5d3e701f7
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/OpenList-$(PKG_VERSION)
 
@@ -22,9 +22,9 @@ PKG_LICENSE_FILE:=LICENSE
 PKG_MAINTAINER:=sbwml <admin@cooluc.com>
 
 define Download/openlist-frontend
-  FILE:=openlist-frontend-dist-lite-v$(PKG_WEB_VERSION).tar.gz
+  FILE:=openlist-frontend-dist-v$(PKG_WEB_VERSION).tar.gz
   URL:=https://github.com/OpenListTeam/OpenList-Frontend/releases/download/v$(PKG_WEB_VERSION)/
-  HASH:=effe9d731e4bd57243d02c3c014482e0b213aeab2db0881ab011cfcd4fa2ca0c
+  HASH:=4e137046ef350ca847bff145824ed2ffe9948a05c39a6e269b80c69eb13fc636
 endef
 
 PKG_BUILD_DEPENDS:=golang/host
@@ -73,13 +73,9 @@ ifeq ($(ARCH),arm)
   endif
 endif
 
-ifneq ($(CONFIG_USE_MUSL),)
-  TARGET_CFLAGS += -D_LARGEFILE64_SOURCE
-endif
-
 define Build/Prepare
 	$(call Build/Prepare/Default)
-	$(TAR) --strip-components=1 -C $(PKG_BUILD_DIR)/public/dist -xzf $(DL_DIR)/openlist-frontend-dist-lite-v$(PKG_WEB_VERSION).tar.gz
+	$(TAR) --strip-components=1 -C $(PKG_BUILD_DIR)/public/dist -xzf $(DL_DIR)/openlist-frontend-dist-v$(PKG_WEB_VERSION).tar.gz
 	$(SED) 's_https://res.oplist.org/logo_/assets_g' $(PKG_BUILD_DIR)/public/dist/index.html
 	$(SED) 's_https://res.oplist.org/logo_/assets_g' $(PKG_BUILD_DIR)/public/dist/static/manifest.json
 endef

@@ -28,7 +28,7 @@ DEBUG_LOG="/tmp/openclash_debug.log"
 LOGTIME=$(echo $(date "+%Y-%m-%d %H:%M:%S"))
 log_level=$(uci_get_config "log_level")
 enable_custom_dns=$(uci_get_config "enable_custom_dns")
-enable_custom_clash_rules=$(uci_get_config "enable_custom_clash_rules") 
+enable_custom_clash_rules=$(uci_get_config "enable_custom_clash_rules")
 ipv6_enable=$(uci_get_config "ipv6_enable")
 ipv6_dns=$(uci_get_config "ipv6_dns")
 enable_redirect_dns=$(uci_get_config "enable_redirect_dns")
@@ -49,6 +49,11 @@ fi
 core_meta_version=$(/etc/openclash/core/clash_meta -v 2>/dev/null |awk -F ' ' '{print $3}' |head -1 2>/dev/null)
 op_version=$(ipk_v "luci-app-openclash")
 china_ip_route=$(uci_get_config "china_ip_route")
+china_ip_route_domain_source=$(uci_get_config "china_ip_route_domain_source" || echo "mrs")
+case "$china_ip_route_domain_source" in
+   mrs|geosite) ;;
+   *) china_ip_route_domain_source="mrs" ;;
+esac
 common_ports=$(uci_get_config "common_ports")
 router_self_proxy=$(uci_get_config "router_self_proxy")
 core_type=$(uci_get_config "core_type" || echo "Dev")
@@ -89,28 +94,28 @@ fi
 
 ts_cf()
 {
-	if [ "$1" = "0" ] || [ -z "$1" ]; then
-	   echo "停用"
-	else
-	   echo "启用"
+   if [ "$1" = "0" ] || [ -z "$1" ]; then
+      echo "停用"
+   else
+      echo "启用"
    fi
 }
 
 ts_re()
 {
-	if [ -z "$1" ]; then
-	   echo "未安装"
-	else
-	   echo "已安装 ($1)"
+   if [ -z "$1" ]; then
+      echo "未安装"
+   else
+      echo "已安装 ($1)"
   fi
 }
 
 dns_re()
 {
    if [ "$1" = "1" ]; then
-	   echo "Dnsmasq 转发"
+      echo "Dnsmasq 转发"
    elif [ "$1" = "2" ]; then
-	   echo "Firewall 转发"
+      echo "Firewall 转发"
    else
       echo "停用"
    fi
@@ -146,6 +151,7 @@ cat > "$DEBUG_LOG" <<-EOF
 | 系统运行时间 | $(uptime 2>/dev/null) |
 | IPV6-DHCP | $(uci -q get dhcp.lan.dhcpv6 || echo "未配置") |
 | DNS劫持 | $(dns_re "$enable_redirect_dns") |
+| TFO 黑洞超时（秒） | $(cat /proc/sys/net/ipv4/tcp_fastopen_blackhole_timeout_sec 2>/dev/null || echo "不支持") |
 
 ### 磁盘与内存
 
@@ -311,8 +317,9 @@ cat >> "$DEBUG_LOG" <<-EOF
 | 仅代理命中规则流量 | $(ts_cf "$enable_rule_proxy") |
 | 仅允许常用端口流量 | $(ts_cf "$common_ports") |
 | 绕过中国大陆IP | $(ts_cf "$china_ip_route") |
+| 中国大陆域名数据源 | $china_ip_route_domain_source |
 | 路由本机代理 | $(ts_cf "$router_self_proxy") |
-| TUN堆栈类型 | ${stack_type:-system} |
+| TUN堆栈类型 | ${stack_type:-mips} |
 | 启动延迟 | ${delay_start:-0}秒 |
 | 日志大小 | ${log_size:-1024}KB |
 | 旁路由兼容 | $(ts_cf "$bypass_gateway_compatible") |
@@ -418,6 +425,25 @@ cat >> "$DEBUG_LOG" <<-EOF
 \`\`\`
 EOF
 
+if [ -n "$(command -v fw4)" ]; then
+cat >> "$DEBUG_LOG" <<-EOF
+
+## NFTABLES 防火墙设置
+
+\`\`\`bash
+# nft list chain inet fw4 (all chains)
+EOF
+   for nft in "input" "forward" "dstnat" "srcnat" "nat_output" "mangle_prerouting" "mangle_output"; do
+      nft list chain inet fw4 "$nft" >> "$DEBUG_LOG" 2>/dev/null && echo "" >> "$DEBUG_LOG"
+   done >/dev/null 2>&1
+   for nft in "openclash" "openclash_mangle" "openclash_mangle_output" "openclash_output" "openclash_post" "openclash_wan_input" "openclash_dns_hijack" "openclash_dns_redirect" "openclash_v6" "openclash_mangle_v6" "openclash_mangle_output_v6" "openclash_output_v6" "openclash_post_v6" "openclash_wan6_input"; do
+      nft list chain inet fw4 "$nft" >> "$DEBUG_LOG" 2>/dev/null && echo "" >> "$DEBUG_LOG"
+   done >/dev/null 2>&1
+echo "" >> "$DEBUG_LOG"
+cat >> "$DEBUG_LOG" <<-EOF
+\`\`\`
+EOF
+else
 cat >> "$DEBUG_LOG" <<-EOF
 
 ## IPTABLES 防火墙设置
@@ -482,39 +508,63 @@ echo "" >> "$DEBUG_LOG"
 cat >> "$DEBUG_LOG" <<-EOF
 \`\`\`
 EOF
+fi
 
 if [ -n "$(command -v fw4)" ]; then
 cat >> "$DEBUG_LOG" <<-EOF
 
-## NFTABLES 防火墙设置
+## NFT Sets 状态
 
 \`\`\`bash
-# nft list chain inet fw4 (all chains)
+# nft list sets inet fw4
 EOF
-   for nft in "input" "forward" "dstnat" "srcnat" "nat_output" "mangle_prerouting" "mangle_output"; do
-      nft list chain inet fw4 "$nft" >> "$DEBUG_LOG" 2>/dev/null
-   done >/dev/null 2>&1
-   for nft in "openclash" "openclash_mangle" "openclash_mangle_output" "openclash_output" "openclash_post" "openclash_wan_input" "openclash_dns_hijack" "openclash_dns_redirect" "openclash_v6" "openclash_mangle_v6" "openclash_mangle_output_v6" "openclash_output_v6" "openclash_post_v6" "openclash_wan6_input"; do
-      nft list chain inet fw4 "$nft" >> "$DEBUG_LOG" 2>/dev/null
-   done >/dev/null 2>&1
+nft list sets inet fw4 2>/dev/null | sed -n '/^table inet fw4 {/,/^}/p' | awk '
+/elements = \{/ { in_el=1; el=0; trunc=0; indent=""; elem_indent=$0; sub(/[^[:space:]].*/, "", elem_indent); print; if (/[[:space:]]+\}[[:space:]]*$/) in_el=0; next }
+in_el && /\}/ { in_el=0; if (trunc) { print indent "..."; print elem_indent "}" } else print; next }
+in_el {
+    if (!indent) { match($0, /^[[:space:]]*/); indent = substr($0, 1, RLENGTH) }
+    n = split($0, a, ","); el += n
+    if (el > 10 && !trunc) { trunc=1; next }
+    if (trunc) next
+    print
+}
+!in_el {
+    print
+    if (/^[[:space:]]+\}$/) print ""
+}
+' >> "$DEBUG_LOG"
 echo "" >> "$DEBUG_LOG"
 cat >> "$DEBUG_LOG" <<-EOF
 \`\`\`
 EOF
-fi
-
+else
 cat >> "$DEBUG_LOG" <<-EOF
 
 ## IPSET状态
 
 \`\`\`bash
-# ipset list -t
+# ipset list
 EOF
-ipset list -t >> "$DEBUG_LOG"
+for set in $(ipset list -n 2>/dev/null); do
+   ipset list "$set" 2>/dev/null | awk -v max=10 '
+   /^Members:/ { in_members=1; count=0; print; next }
+   in_members {
+       if (/^[[:space:]]*[^[:space:]]/) {
+           count++
+           if (count <= max) { print; next }
+           else if (count == max+1) { print "..."; next }
+           else { next }
+       }
+   }
+   { print }
+   '
+   echo ""
+done >> "$DEBUG_LOG" 2>/dev/null
 echo "" >> "$DEBUG_LOG"
 cat >> "$DEBUG_LOG" <<-EOF
 \`\`\`
 EOF
+fi
 
 cat >> "$DEBUG_LOG" <<-EOF
 
@@ -631,7 +681,14 @@ cat >> "$DEBUG_LOG" <<-EOF
 
 ## DNS 解析文件
 
-### **Dnsmasq 当前默认 resolv 文件:** \`$dnsmasq_default_resolvfile\`
+### **Dnsmasq 当前默认 resolv 文件**
+
+\`\`\`bash
+EOF
+echo $dnsmasq_default_resolvfile >> "$DEBUG_LOG"
+echo "" >> "$DEBUG_LOG"
+cat >> "$DEBUG_LOG" <<-EOF
+\`\`\`
 EOF
 
 if [ -s "/tmp/resolv.conf.auto" ]; then
@@ -744,7 +801,9 @@ EOF
 
 sed -i -E 's/(([0-9]{1,3}\.){2})[0-9]{1,3}\.[0-9]{1,3}/\1*\.*/g' "$DEBUG_LOG" 2>/dev/null
 
-sed -i -E 's/(:[0-9a-fA-F]{1,4}){3}/:*:*:*/' "$DEBUG_LOG" 2>/dev/null
+sed -i -E 's/::[0-9a-fA-F]{1,4}:(([0-9]{1,3}\.){3}[0-9]{1,3})/::*:\1/g' "$DEBUG_LOG" 2>/dev/null
+sed -i -E 's/([0-9a-fA-F]{1,4}):[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){3}/\1:*:*:*:*\2/g' "$DEBUG_LOG" 2>/dev/null
+sed -i -E 's/([0-9a-fA-F]{1,4})(:[0-9a-fA-F]{1,4}){0,5}::([0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4})*)?/\1:*::*/g' "$DEBUG_LOG" 2>/dev/null
 
 sed -i 's/Downloading URL【[^】]*】/Downloading URL【*】/g' "$DEBUG_LOG" 2>/dev/null
 

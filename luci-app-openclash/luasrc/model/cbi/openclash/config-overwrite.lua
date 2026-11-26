@@ -9,33 +9,8 @@ local uci = require "luci.model.uci".cursor()
 local json = require "luci.jsonc"
 local datatype = require "luci.cbi.datatypes"
 
--- 优化 CBI UI（新版 LuCI 专用）
-local function optimize_cbi_ui()
-	HTTP.write([[
-		<script type="text/javascript">
-			// 修正上移、下移按钮名称
-			document.querySelectorAll("input.btn.cbi-button.cbi-button-up").forEach(function(btn) {
-				btn.value = "]] .. translate("Move up") .. [[";
-			});
-			document.querySelectorAll("input.btn.cbi-button.cbi-button-down").forEach(function(btn) {
-				btn.value = "]] .. translate("Move down") .. [[";
-			});
-			// 删除控件和说明之间的多余换行
-			document.querySelectorAll("div.cbi-value-description").forEach(function(descDiv) {
-				var prev = descDiv.previousSibling;
-				while (prev && prev.nodeType === Node.TEXT_NODE && prev.textContent.trim() === "") {
-					prev = prev.previousSibling;
-				}
-				if (prev && prev.nodeType === Node.ELEMENT_NODE && prev.tagName === "BR") {
-					prev.remove();
-				}
-			});
-		</script>
-	]])
-end
-
-font_green = [[<b style=color:green>]]
-font_red = [[<b style=color:red>]]
+font_green = [[<b class="oc-txt-good">]]
+font_red = [[<b class="oc-txt-bad">]]
 font_off = [[</b>]]
 bold_on = [[<strong>]]
 bold_off = [[</strong>]]
@@ -93,12 +68,15 @@ o:value("https://cp.cloudflare.com/generate_204")
 o:value("http://captive.apple.com/generate_204")
 o.default = "0"
 
-o = s:taboption("settings", Value, "github_address_mod", translate("Github Address Modify"))
-o.description = translate("Modify The Github Address In The Config And OpenClash With Proxy(CDN) To Prevent File Download Faild. Format Reference:").." ".."<a href='javascript:void(0)' onclick='javascript:return winOpen(\"https://ghfast.top/\")'>https://ghfast.top/</a>"
+o = s:taboption("settings", Value, "github_address_mod", font_red..bold_on..translate("GitHub Address Proxy")..bold_off..font_off)
+o.description = translate("Proxy The GitHub Address In The Config And OpenClash With Proxy(CDN) To Prevent File Download Failed.").." "..translate("Format Reference:").." ".."<a href='javascript:void(0)' onclick='javascript:return winOpen(\"https://ghfast.top/\")'>https://ghfast.top/</a>"
 o:value("0", translate("Disable"))
 o:value("https://fastly.jsdelivr.net/")
 o:value("https://testingcf.jsdelivr.net/")
 o:value("https://cdn.jsdelivr.net/")
+for _, cdn in ipairs(fs.cdn_list()) do
+	o:value(cdn)
+end
 o.default = "0"
 
 o = s:taboption("settings", ListValue, "log_level", translate("Log Level"))
@@ -215,6 +193,7 @@ function custom_fallback_filter.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_fallback_filter.yaml", value)
 		end
 	end
+	return true
 end
 
 if op_mode == "fake-ip" then
@@ -247,6 +226,7 @@ function custom_fake_black.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_fake_filter.list", value)
 		end
 	end
+	return true
 end
 end
 
@@ -271,6 +251,7 @@ function custom_domain_dns_policy.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_domain_dns_policy.list", value)
 		end
 	end
+	return true
 end
 
 o = s:taboption("dns", Flag, "custom_proxy_server_policy", translate("Proxy-Server-Nameserver-Policy"))
@@ -294,6 +275,7 @@ function custom_proxy_server_dns_policy.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_proxy_server_dns_policy.list", value)
 		end
 	end
+	return true
 end
 
 o = s:taboption("dns", Flag, "custom_host", translate("Hosts"))
@@ -317,6 +299,7 @@ function custom_hosts.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_hosts.list", value)
 		end
 	end
+	return true
 end
 
 -- Meta
@@ -355,7 +338,7 @@ o.default = 0
 
 o = s:taboption("meta", Flag, "enable_meta_sniffer", font_red..bold_on..translate("Enable Sniffer")..bold_off..font_off)
 o.description = font_red..bold_on..translate("Sniffer Will Prevent Domain Name Proxy and DNS Hijack Failure")..bold_off..font_off
-o.default = 1
+o.default = 0
 
 o = s:taboption("meta", Flag, "enable_meta_sniffer_pure_ip", translate("Forced Sniff Pure IP"))
 o.description = translate("Forced Sniff Pure IP Connections")
@@ -384,6 +367,7 @@ function sniffer_custom.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_sniffer.yaml", value)
 		end
 	end
+	return true
 end
 
 -- Smart Settings
@@ -399,6 +383,14 @@ o.description = translate("Nodes Weight Priority, <1 Means Lower Priority, >1 Me
 o = s:taboption("smart", Flag, "smart_prefer_asn", font_red..bold_on..translate("Prefer-ASN")..bold_off..font_off)
 o.description = translate("Select Nodes Force Lookup and Use Target ASN Info First For More Stable Experience")
 o.default = 0
+
+o = s:taboption("smart", Value, "smart_tolerance", translate("Smart Group Tolerance").."(ms)")
+o.description = translate("Sort When Proxies Delays Within Tolerance are Treated as Equal, Preventing Jitter")
+o:value("0", translate("Disable"))
+o:value("100")
+o:value("150")
+o.datatype = "uinteger"
+o.default = "0"
 
 o = s:taboption("smart", Flag, "smart_enable_lgbm", font_red..bold_on..translate("Enable LightGBM Model")..bold_off..font_off)
 o.description = font_red..bold_on..translate("Use LightGBM Model To Predict Weight")..bold_off..font_off
@@ -476,6 +468,7 @@ function custom_rules.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_rules.list", value)
 		end
 	end
+	return true
 end
 
 custom_rules_2 = s:taboption("rules", Value, "custom_rules_2")
@@ -496,6 +489,7 @@ function custom_rules_2.write(self, section, value)
 			fs.writefile("/etc/openclash/custom/openclash_custom_rules_2.list", value)
 		end
 	end
+	return true
 end
 
 -- [[ Edit Custom DNS ]] --
@@ -568,8 +562,8 @@ s.template = "cbi/tblsection"
 s.rmempty = false
 s.render = function(self, ...)
 	Map.render(self, ...)
-	if type(optimize_cbi_ui) == "function" then
-		optimize_cbi_ui()
+	if type(fs.optimize_cbi_ui) == "function" then
+		fs.optimize_cbi_ui()
 	end
 end
 
@@ -615,6 +609,5 @@ o.write = function()
 end
 
 m:append(Template("openclash/config_editor"))
-m:append(Template("openclash/toolbar_show"))
 
 return m

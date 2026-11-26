@@ -4,12 +4,23 @@ require "luci.sys"
 local ucursor = require "luci.model.uci".cursor()
 local json = require "luci.jsonc"
 
-local server_section = arg[1]
-local proto          = arg[2] or "tcp"
-local local_port     = arg[3] or "0"
-local socks_port     = arg[4] or "0"
+-- An omitted value reaches us either as a missing argument or as an empty
+-- string, depending on whether the caller quoted the expansion. Empty strings
+-- are truthy in Lua, so "arg[n] or default" alone does not cover both.
+local function argv(n, default)
+	local value = arg[n]
+	if value == nil or value == "" then
+		return default
+	end
+	return value
+end
 
-local chain          = arg[5] or "0"
+local server_section = arg[1]
+local proto          = argv(2, "tcp")
+local local_port     = argv(3, "0")
+local socks_port     = argv(4, "0")
+
+local chain          = argv(5, "0")
 
 -- trim
 local function trim(text)
@@ -36,15 +47,27 @@ end
 local chain_local_port = split(chain, "/")[2] or "0"
 
 local server = ucursor:get_all("shadowsocksr", server_section)
+-- AnyTLS subscriptions previously used a standalone type with no launcher.
+if server.type == "anytls" then
+	server.type = "v2ray"
+	server.v2ray_protocol = "anytls"
+end
+if server.v2ray_protocol == "anytls" and server.tls == nil then
+	server.tls = "1"
+end
 local socks_server = ucursor:get_all("shadowsocksr", "@socks5_proxy[0]") or {}
 local xray_fragment = ucursor:get_all("shadowsocksr", "@global_xray_fragment[0]") or {}
 local xray_noise = ucursor:get_all("shadowsocksr", "@xray_noise_packets[0]") or {}
 local default_node_local_port = ucursor:get_first("shadowsocksr", "global", "default_node_local_port", "1234")
 local dns_mode = ucursor:get_first("shadowsocksr", "global", "pdnsd_enable", "0")
+local ipv6_support = ucursor:get_first("shadowsocksr", "global", "ipv6_support", "0") == "1"
+local redir_address = ipv6_support and "::" or "0.0.0.0"
+local redir_host = ipv6_support and "[::]" or "0.0.0.0"
 local dns_ipv4_only = ucursor:get_first("shadowsocksr", "global", "filter_aaaa")
 if not dns_ipv4_only or dns_ipv4_only == "" then
 	dns_ipv4_only = ucursor:get_first("shadowsocksr", "global", "mosdns_ipv6", "1")
 end
+if ipv6_support then dns_ipv4_only = "0" end
 local builtin_dns_server = ucursor:get_first("shadowsocksr", "global", "tunnel_forward", "8.8.4.4:53")
 local outbound_settings = nil
 local xray_version = nil
@@ -340,6 +363,42 @@ function outbound:handleIndex(index)
 		trojan = function()
 			trojan_shadowsocks()
 		end,
+		snell = function()
+			outbound_settings = {
+				address = server.server, port = tonumber(server.server_port),
+				psk = server.snell_psk, version = tonumber(server.snell_version) or 4,
+				obfs = server.snell_obfs or "", obfsHost = server.snell_obfs_host,
+				reuse = server.snell_reuse == "1"
+			}
+		end,
+		tuic = function()
+			local version = tonumber(server.xray_tuic_version) or 5
+			local alpn = {}
+			for value in (server.tuic_alpn or ""):gmatch("[^,]+") do alpn[#alpn + 1] = value end
+			if #alpn == 0 then alpn = {"h3"} end
+			outbound_settings = {
+				address = server.server, port = tonumber(server.server_port), version = version,
+				token = version == 4 and server.xray_tuic_token or nil,
+				uuid = version == 5 and server.tuic_uuid or nil,
+				password = version == 5 and server.tuic_passwd or nil,
+				serverName = server.tls_host, certificateFile = server.xray_tuic_ca,
+				allowInsecure = server.insecure == "1",
+				alpn = alpn,
+				congestionControl = server.congestion_control or "cubic",
+				udpRelayMode = server.udp_relay_mode or "native",
+				heartbeatInterval = (tonumber(server.heartbeat) or 10) * 1000,
+				requestTimeout = (tonumber(server.timeout) or 8) * 1000,
+				reduceRtt = server.zero_rtt_handshake == "1"
+			}
+		end,
+		shadowsocksr = function()
+			outbound_settings = {
+				address = server.server, port = tonumber(server.server_port),
+				password = server.password, method = server.ssr_method or "aes-128-cfb",
+				protocol = server.ssr_protocol or "origin", protocolParam = server.protocol_param,
+				obfs = server.ssr_obfs or "plain", obfsParam = server.obfs_param
+			}
+		end,
 		shadowsocks = function()
 			trojan_shadowsocks()
 		end,
@@ -351,6 +410,29 @@ function outbound:handleIndex(index)
 		end,
 		wireguard = function()
 			wireguard()
+		end,
+		naive = function()
+			outbound_settings = {
+				address = server.server, port = tonumber(server.server_port),
+				username = server.username, password = server.password,
+				serverName = server.tls_host,
+				certificateFile = server.naive_certificate_file,
+				quic = server.naive_quic == "1",
+				udpOverTcp = server.naive_udp_over_tcp == "1",
+				insecureConcurrency = tonumber(server.naive_concurrency),
+				quicCongestionControl = server.naive_quic_congestion,
+				echConfigList = server.naive_ech_config
+			}
+		end,
+		anytls = function()
+			outbound_settings = {
+				address = server.server,
+				port = tonumber(server.server_port),
+				password = server.password,
+				idleSessionCheckInterval = tonumber(server.anytls_idle_session_check_interval),
+				idleSessionTimeout = tonumber(server.anytls_idle_session_timeout),
+				minIdleSession = tonumber(server.anytls_min_idle_session)
+			}
 		end,
 		hysteria2 = function()
 			xray_hysteria2()
@@ -481,7 +563,7 @@ Xray.outbounds = {
 		tag = (remarks ~= nil and remarks ~= "") and (node_id .. ":" .. remarks) or node_id,
 		-- 底层传输配置
 		streamSettings = (server.v2ray_protocol ~= "wireguard") and {
-			network = (server.v2ray_protocol == "hysteria2") and "hysteria" or (server.transport or "raw"),
+			[(xray_version_val >= 260711) and "method" or "network"] = (server.v2ray_protocol == "hysteria2") and "hysteria" or (server.transport or "raw"),
 			security = (server.xtls == '1') and "xtls" or (server.tls == '1') and "tls" or (server.reality == '1') and "reality" or nil,
 			tlsSettings = (server.tls == '1') and {
 				-- tls
@@ -499,16 +581,23 @@ Xray.outbounds = {
 				fingerprint = server.fingerprint,
 				allowInsecure = (function()
 					if server.tls_CertSha and server.tls_CertSha ~= "" then return nil end
-					if os.date("%Y.%m.%d") < "2026.06.01" then
-						return server.insecure == "1"
+					return server.insecure == "1"
+				end)(),
+				serverName = server.tls_host,
+				certificates = (function()
+					if server.masque_certificate == "1" and server.masque_certificate_pem and server.masque_certificate_pem ~= "" then
+						return {
+							certificate = split(server.masque_certificate_pem:gsub("\\n", "\n"), "\n"),
+							usage = "verify"
+						}
+					elseif server.certificate == "1" and server.certpath and server.certpath ~= "" then
+						return {
+							usage = "verify",
+							certificateFile = server.certpath
+						}
 					end
 					return nil
 				end)(),
-				serverName = server.tls_host,
-				certificates = server.certificate and {
-					usage = "verify",
-					certificateFile = server.certpath
-				} or nil,
 				pinnedPeerCertSha256 = (function()
 					if xray_version_val < 260131 then return nil end
 					if not server.tls_CertSha then return "" end
@@ -633,6 +722,28 @@ Xray.outbounds = {
 				initial_windows_size = server.initial_windows_size and tonumber(server.initial_windows_size) or nil,
 				user_agent = server.user_agent
 			} or nil,
+			masqueSettings = (server.v2ray_protocol == "masque") and {
+				path = (server.masque_path and server.masque_path ~= "") and server.masque_path or nil,
+				warp = (server.masque_warp == "1") and {
+					privateKey = (server.masque_warp_private_key or ""):gsub("\\n", "\n"),
+					publicKey = (server.masque_warp_public_key or ""):gsub("\\n", "\n"),
+					address = server.masque_warp_address
+				} or nil,
+				headers = (function()
+					local headers = {}
+					if server.auth_enable == "1" and server.masque_warp ~= "1" and ((server.username and server.username ~= "") or (server.password and server.password ~= "")) then
+						headers["authorization"] = "Basic " .. base64Encode((server.username or "") .. ":" .. (server.password or ""))
+					end
+					if server.user_agent and server.user_agent ~= "" then
+						headers["user-agent"] = server.user_agent
+					end
+					for line in (server.masque_headers or ""):gsub("\\n", "\n"):gmatch("[^\r\n]+") do
+						local key, value = line:match("^%s*([^:]+):%s*(.-)%s*$")
+						if key then headers[trim(key):lower()] = value end
+					end
+					return next(headers) and headers or nil
+				end)()
+			} or nil,
 			hysteriaSettings = (server.v2ray_protocol == "hysteria2") and {
 				-- hysteria2
 				version = 2,
@@ -643,21 +754,39 @@ Xray.outbounds = {
 				local PT = server.v2ray_protocol
 				local TP = server.transport
 				if TP == "kcp" then
-					local map = {none = "none", srtp = "header-srtp", utp = "header-utp", ["wechat-video"] = "header-wechat",
-						dtls = "header-dtls", wireguard = "header-wireguard", dns = "header-dns"}
 					local udp = {}
-					if server.kcp_guise and server.kcp_guise ~= "none" then
-						local g = { type = map[server.kcp_guise] }
-						if server.kcp_guise == "dns" and server.kcp_domain and server.kcp_domain ~= "" then
-							g.settings = { domain = server.kcp_domain }
+					if xray_version_val < 260601 then
+						local map = {none = "none", srtp = "header-srtp", utp = "header-utp", ["wechat-video"] = "header-wechat",
+							dtls = "header-dtls", wireguard = "header-wireguard", dns = "header-dns"}
+						if server.kcp_guise and server.kcp_guise ~= "none" then
+							local g = { type = map[server.kcp_guise] }
+							if server.kcp_guise == "dns" and server.kcp_domain and server.kcp_domain ~= "" then
+								g.settings = { domain = server.kcp_domain }
+							end
+							udp[#udp+1] = g
 						end
-						udp[#udp+1] = g
+						local c = { type = (server.seed and server.seed ~= "") and "mkcp-aes128gcm" or "mkcp-original" }
+						if server.seed and server.seed ~= "" then
+							c.settings = { password = server.seed }
+						end
+						udp[#udp+1] = c
+					else
+						local map = {none = "none", srtp = "srtp", utp = "utp", ["wechat-video"] = "wechat",
+							dtls = "dtls", wireguard = "wireguard", dns = "dns"}
+						local s = { type = "mkcp-legacy" }
+						if server.seed and server.seed ~= "" then
+							s.settings = { value = server.seed }
+						end
+						udp[#udp+1] = s
+						if server.kcp_guise and server.kcp_guise ~= "none" then
+							local g = { type = "mkcp-legacy" }
+							g.settings = { header = map[server.kcp_guise] }
+							if server.kcp_guise == "dns" and server.kcp_domain and server.kcp_domain ~= "" then
+								g.settings.value = server.kcp_domain
+							end
+							udp[#udp+1] = g
+						end
 					end
-					local c = { type = (server.seed and server.seed ~= "") and "mkcp-aes128gcm" or "mkcp-original" }
-					if server.seed and server.seed ~= "" then
-						c.settings = { password = server.seed }
-					end
-					udp[#udp+1] = c
 					finalmask.udp = udp
 				elseif PT == "hysteria2" then
 					local udp = {}
@@ -690,7 +819,8 @@ Xray.outbounds = {
 							type = "realm",
 							settings = {
 								url = url,
-								stunServers = stun
+								stunServers = stun,
+								portMapping = (node.hysteria2_realm_upnp == "1") and { enabled = true } or nil
 							}
 						}
 						udp[#udp+1] = r
@@ -703,7 +833,7 @@ Xray.outbounds = {
 						brutalUp = up > 0 and (up .. "mbps") or nil,
 						brutalDown = down > 0 and (down .. "mbps") or nil,
 						udpHop = (server.flag_port_hopping == "1") and {
-							ports = string.gsub(server.port_range, ":", "-"),
+							ports = server.port_range and string.gsub(server.port_range, ":", "-"),
 							interval = (function(v)
 								if not v then return 30 end
 								if v:find("-", 1, true) then
@@ -824,7 +954,7 @@ Xray.outbounds = {
 				tcpFastOpen = (function()
 					if server.transport == "xhttp" then
 						return (server.fast_open == "1") and true or false
-					elseif server.v2ray_protocol == "hysteria2" then
+					elseif server.v2ray_protocol == "hysteria2" or server.v2ray_protocol == "masque" then
 						return (server.fast_open == "1") and true or nil
 					else
 						return nil
@@ -838,7 +968,7 @@ Xray.outbounds = {
 				              ((remarks and remarks ~= "") and (node_id .. "." .. remarks) or ("direct" .. "." .. node_id)) or nil
 			}
 		} or nil,
-		mux = (server.v2ray_protocol ~= "hysteria2" and server.v2ray_protocol ~= "wireguard") and {
+		mux = (server.v2ray_protocol ~= "hysteria2" and server.v2ray_protocol ~= "wireguard" and server.v2ray_protocol ~= "anytls" and server.v2ray_protocol ~= "masque") and {
 			-- mux
 			enabled = (server.mux == "1"), -- Mux
 			concurrency = (server.mux == "1" and (tonumber(server.concurrency) or -1)) or nil, -- TCP 最大并发连接数
@@ -847,6 +977,53 @@ Xray.outbounds = {
 		} or nil
 	}
 }
+
+-- These protocols own their framing, obfuscation and multiplexing.
+-- Preserve Xray socket marks and dialer chains.
+if server.v2ray_protocol == "naive" or server.v2ray_protocol == "shadowsocksr" or server.v2ray_protocol == "tuic" or server.v2ray_protocol == "snell" then
+	local ob = Xray.outbounds[1]
+	ob.streamSettings = { network = "raw", sockopt = ob.streamSettings.sockopt }
+	ob.mux = nil
+end
+
+if server.type == "v2ray" and server.transport == "kcptun" then
+	local supported = {vmess = true, vless = true, trojan = true, shadowsocks = true, socks = true, http = true}
+	assert(supported[server.v2ray_protocol], "Kcptun requires a supported stream proxy protocol")
+	assert(server.tls ~= "1" and server.reality ~= "1" and server.xtls ~= "1", "Kcptun cannot be combined with stream TLS or REALITY")
+	assert(server.kcp_enable ~= "1", "Native Kcptun cannot be combined with the external Kcptun client")
+	assert(not server.tls_flow or server.tls_flow == "", "Kcptun cannot be combined with XTLS flow")
+	local options = {}
+	if server.xray_kcptun_options and server.xray_kcptun_options:match("%S") then
+		assert(server.xray_kcptun_options:match("^%s*{"), "Kcptun options must be a JSON object")
+		options = json.parse(server.xray_kcptun_options)
+		assert(type(options) == "table", "Kcptun options must be a JSON object")
+	end
+	options.key = server.xray_kcptun_key
+	options.crypt = server.xray_kcptun_crypt or "aes"
+	options.mode = server.xray_kcptun_mode or "fast"
+	options.smuxver = tonumber(server.xray_kcptun_smuxver) or 1
+	options.nocomp = server.xray_kcptun_nocomp == "1"
+	options.conn = tonumber(server.xray_kcptun_conn) or 1
+	Xray.outbounds[1].streamSettings.kcptunSettings = options
+end
+
+if server.type == "v2ray" and server.xray_shadowtls == "1" then
+	local supported = {vmess = true, vless = true, trojan = true, shadowsocks = true}
+	assert(supported[server.v2ray_protocol], "ShadowTLS requires a supported TCP proxy protocol")
+	assert((server.transport or "raw") == "raw" or server.transport == "tcp", "ShadowTLS requires RAW/TCP")
+	assert(server.tls ~= "1" and server.reality ~= "1", "ShadowTLS cannot be combined with TLS or REALITY")
+	assert(not server.tls_flow or server.tls_flow == "", "ShadowTLS cannot be combined with XTLS flow")
+	local stream = Xray.outbounds[1].streamSettings
+	stream.security = "shadowtls"
+	stream.shadowtlsSettings = {
+		version = tonumber(server.xray_shadowtls_version) or 3,
+		password = server.xray_shadowtls_password,
+		serverName = server.xray_shadowtls_sni,
+		fingerprint = server.xray_shadowtls_fingerprint or "chrome",
+		strictMode = server.xray_shadowtls_strict ~= "0",
+		allowInsecure = server.xray_shadowtls_insecure == "1"
+	}
+end
 
 if xray_builtin_dns then
 	table.insert(Xray.outbounds, {
@@ -882,7 +1059,7 @@ if xray_fragment.fragment ~= "0" or (xray_fragment.noise ~= "0" and xray_noise.e
 			tcpFastOpen = (function()
 				if server.transport == "xhttp" then
 					return (server.fast_open == "1") and true or false
-				elseif server.v2ray_protocol == "hysteria2" then
+				elseif server.v2ray_protocol == "hysteria2" or server.v2ray_protocol == "masque" then
 					return (server.fast_open == "1") and true or nil
 				else
 					return nil
@@ -944,13 +1121,13 @@ local trojan = {
 }
 local naiveproxy = {
 	proxy = (server.username and server.password and server.server and server.server_port) and "https://" .. server.username .. ":" .. server.password .. "@" .. format_host_port(server.server, server.server_port),
-	listen = (proto == "redir") and "redir" .. "://0.0.0.0:" .. tonumber(local_port) or "socks" .. "://0.0.0.0:" .. tonumber(local_port),
+	listen = (proto == "redir") and "redir" .. "://" .. redir_host .. ":" .. tonumber(local_port) or "socks" .. "://0.0.0.0:" .. tonumber(local_port),
 	["insecure-concurrency"] = tonumber(server.concurrency) or 1
 }
 local ss = {
 	server = (server.kcp_enable == "1") and "127.0.0.1" or server.server,
 	server_port = tonumber(server.server_port),
-	local_address = "0.0.0.0",
+	local_address = redir_address,
 	local_port = tonumber(local_port),
 	mode = (proto == "tcp,udp") and "tcp_and_udp" or (proto .. "_only"),
 	password = server.password,
@@ -1013,14 +1190,14 @@ local hysteria2 = {
 	},
 --[[
 	tcpTProxy = (proto:find("tcp") and local_port ~= "0") and {
-		listen = "0.0.0.0:" .. tonumber(local_port)
+		listen = redir_host .. ":" .. tonumber(local_port)
 	} or nil,
 ]]--
 	tcpRedirect = (proto:find("tcp") and local_port ~= "0") and {
-		listen = "0.0.0.0:" .. tonumber(local_port)
+		listen = redir_host .. ":" .. tonumber(local_port)
 	} or nil,
 	udpTProxy = (proto:find("udp") and local_port ~= "0") and {
-		listen = "0.0.0.0:" .. tonumber(local_port)
+		listen = redir_host .. ":" .. tonumber(local_port)
 	} or nil,
 	obfs = (server.flag_obfs == "1") and {
 		type = server.obfs_type,
@@ -1098,7 +1275,7 @@ local shadowtls = {
 local chain_sslocal = {
 	locals = local_port ~= "0" and {
 		{
-			local_address = "0.0.0.0",
+			local_address = redir_address,
 			local_port = (chain_local_port == "0" and effective_node_local_port or tonumber(chain_local_port)),
 			mode = (proto:find("tcp,udp") and "tcp_and_udp") or proto .. "_only",
 			protocol = "redir",
@@ -1108,12 +1285,12 @@ local chain_sslocal = {
 		},
 		socks_port ~= "0" and {
 			protocol = "socks",
-			local_address = "0.0.0.0",
+			local_address = redir_address,
 			local_port = tonumber(socks_port)
 		} or nil
 	} or {{
 		protocol = "socks",
-		local_address = "0.0.0.0",
+		local_address = redir_address,
 		local_port = tonumber(socks_port)
 	}},
 	servers = {
@@ -1262,6 +1439,14 @@ function config:handleIndex(index)
 			if chain_switch[ChainType] then
 				chain_switch[ChainType]()
 			end
+		end,
+		snell = function()
+			outbound_settings = {
+				address = server.server, port = tonumber(server.server_port),
+				psk = server.snell_psk, version = tonumber(server.snell_version) or 4,
+				obfs = server.snell_obfs or "", obfsHost = server.snell_obfs_host,
+				reuse = server.snell_reuse == "1"
+			}
 		end,
 		tuic = function()
 			print(json.stringify(tuic, 1))

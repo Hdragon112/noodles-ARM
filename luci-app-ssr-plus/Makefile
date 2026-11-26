@@ -1,10 +1,8 @@
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=luci-app-ssr-plus
-LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-ssr-plus
-PKG_VERSION:=196
-PKG_RELEASE:=3
+PKG_VERSION:=198
+PKG_RELEASE:=5
 
 PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_$(PKG_NAME)_Iptables_Transparent_Proxy \
@@ -12,14 +10,15 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_NONE_V2RAY \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Xray \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ChinaDNS_NG \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_DNS2TCP \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_MosDNS \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Http_Proxy \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Mihomo \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_GeoData \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadow_TLS \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_NaiveProxy \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_NONE_Client \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Rust_Client \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_NONE_Server \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Rust_Server \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Simple_Obfs \
@@ -27,14 +26,21 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Client \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Server
 
-LUCI_TITLE:=SS/SSR/V2Ray/Trojan/NaiveProxy/Tuic/ShadowTLS/Hysteria/Socks5/Clash LuCI interface
+LUCI_TITLE:=LuCI support for SSR-Plus (Multi-protocol Proxy)
 LUCI_PKGARCH:=all
 LUCI_DEPENDS:= \
-	+libuci-lua +lua +luci-compat +coreutils +coreutils-base64 +dns2tcp +dnsmasq-full \
-	+jq +ip-full +lua-neturl +libuci-lua +microsocks +ipt2socks +lyaml \
-	+resolveip +curl +nping +unzip +xz-utils +xz \
+	+libuci-lua +lua +luci-compat +dns2tcp +dnsmasq-full \
+	+ip-full +lua-neturl +microsocks +ipt2socks +lyaml \
+	+resolveip +curl +nping +coreutils +coreutils-timeout \
+	+idn2 \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_ChinaDNS_NG:chinadns-ng \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_MosDNS:mosdns \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_Http_Proxy:3proxy \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_Mihomo:mihomo \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_Mihomo:v2ray-geoip \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_GeoData:v2ray-geoip \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_GeoData:v2ray-geosite \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_Xray:xray-core \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Shadow_TLS:shadow-tls \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun:kcptun-client \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_NaiveProxy:naiveproxy \
@@ -57,24 +63,24 @@ choice
 config PACKAGE_$(PKG_NAME)_Iptables_Transparent_Proxy
 	bool "Iptables Transparent Proxy"
 	depends on !PACKAGE_firewall4
-	select PACKAGE_dnsmasq_full_ipset
-	select PACKAGE_ipset
-	select PACKAGE_iptables
-	select PACKAGE_iptables-zz-legacy
-	select PACKAGE_iptables-mod-conntrack-extra
-	select PACKAGE_iptables-mod-iprange
-	select PACKAGE_iptables-mod-socket
-	select PACKAGE_iptables-mod-tproxy
-	select PACKAGE_kmod-ipt-nat
+	select PACKAGE_dnsmasq_full_ipset if PACKAGE_$(PKG_NAME)
+	select PACKAGE_ipset if PACKAGE_$(PKG_NAME)
+	select PACKAGE_iptables if PACKAGE_$(PKG_NAME)
+	select PACKAGE_iptables-zz-legacy if PACKAGE_$(PKG_NAME)
+	select PACKAGE_iptables-mod-conntrack-extra if PACKAGE_$(PKG_NAME)
+	select PACKAGE_iptables-mod-iprange if PACKAGE_$(PKG_NAME)
+	select PACKAGE_iptables-mod-socket if PACKAGE_$(PKG_NAME)
+	select PACKAGE_iptables-mod-tproxy if PACKAGE_$(PKG_NAME)
+	select PACKAGE_kmod-ipt-nat if PACKAGE_$(PKG_NAME)
 
 config PACKAGE_$(PKG_NAME)_Nftables_Transparent_Proxy
 	bool "Nftables Transparent Proxy"
 	depends on PACKAGE_firewall4
-	select PACKAGE_dnsmasq_full_nftset
-	select PACKAGE_nftables
-	select PACKAGE_kmod-nft-socket
-	select PACKAGE_kmod-nft-tproxy
-	select PACKAGE_kmod-nft-nat
+	select PACKAGE_dnsmasq_full_nftset if PACKAGE_$(PKG_NAME)
+	select PACKAGE_nftables if PACKAGE_$(PKG_NAME)
+	select PACKAGE_kmod-nft-socket if PACKAGE_$(PKG_NAME)
+	select PACKAGE_kmod-nft-tproxy if PACKAGE_$(PKG_NAME)
+	select PACKAGE_kmod-nft-nat if PACKAGE_$(PKG_NAME)
 endchoice
 
 choice
@@ -101,20 +107,18 @@ endchoice
 
 choice
 	prompt "V2ray-core Selection"
-	default PACKAGE_$(PKG_NAME)_INCLUDE_NONE_V2RAY
+	default PACKAGE_$(PKG_NAME)_INCLUDE_Xray
 
 	config PACKAGE_$(PKG_NAME)_INCLUDE_NONE_V2RAY
 	bool "None"
 
 	config PACKAGE_$(PKG_NAME)_INCLUDE_Xray
 	bool "Xray-core"
-	select PACKAGE_xray-core
-	select PACKAGE_coreutils-timeout
 endchoice
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_ChinaDNS_NG
 	bool "Include ChinaDNS-NG"
-	default y if aarch64||arm||i386||x86_64
+	default n
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_MosDNS
 	bool "Include MosDNS"
@@ -122,20 +126,14 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_MosDNS
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Http_Proxy
 	bool "Include HTTP(S) Proxy Server"
-	select PACKAGE_3proxy
 	default y if (aarch64||arm||i386||loongarch64||riscv64||x86_64)
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Mihomo
 	bool "Include Mihomo (Clash Support)"
-	select PACKAGE_mihomo
-	select PACKAGE_v2ray-geoip
-	depends on aarch64||arm||i386||loongarch64||riscv64||x86_64
-	default y if aarch64||arm||i386||loongarch64||riscv64||x86_64
+	default y if i386||loongarch64||riscv64||x86_64
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_GeoData
 	bool "Include GeoData (GeoIP and GeoSite)"
-	select PACKAGE_v2ray-geoip
-	select PACKAGE_v2ray-geosite
 	default y if i386||x86_64
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Shadow_TLS
@@ -165,7 +163,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_V2ray_Plugin
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Client
 	bool "Include ShadowsocksR Libev Client"
-	default y
+	default n
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Server
 	bool "Include ShadowsocksR Libev Server"

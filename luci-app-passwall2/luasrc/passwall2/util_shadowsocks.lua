@@ -1,12 +1,16 @@
 module("luci.passwall2.util_shadowsocks", package.seeall)
 local api = require "luci.passwall2.api"
-local uci = api.uci
 local jsonc = api.jsonc
 
 function gen_config_server(node)
+	local user = nil
+	if node.user then
+		user = api.uci_get_s(node.user)
+	end
+
 	local config = {}
 	config.server_port = tonumber(node.port)
-	config.password = node.password
+	config.password = user and user.password or ""
 	config.timeout = tonumber(node.timeout)
 	config.fast_open = (node.tcp_fast_open and node.tcp_fast_open == "1") and true or false
 	config.method = node.method
@@ -36,7 +40,7 @@ function gen_config(var)
 		print("node Cannot be empty!")
 		return
 	end
-	local node = uci:get_all("passwall2", node_id)
+	local node = api.uci_get_c(node_id)
 	local server_host = var["server_host"] or (node.address or ""):lower()
 	local server_port = var["server_port"] or node.port
 	local local_addr = var["local_addr"]
@@ -74,7 +78,7 @@ function gen_config(var)
 		fast_open = (node.tcp_fast_open and node.tcp_fast_open == "1") and true or false,
 		reuse_port = true
 	}
-	
+
 	if node.type == "SSR" then
 		config.protocol = node.protocol
 		config.protocol_param = node.protocol_param
@@ -111,7 +115,7 @@ function gen_config(var)
 			})
 		end
 	end
-	
+
 	return jsonc.stringify(config, 1)
 end
 
@@ -129,6 +133,10 @@ if arg[1] then
 			local f = io.open(plugin_sh, "w")
 			f:write("#!/bin/sh\n")
 			f:write("export PATH=/usr/sbin:/usr/bin:/sbin:/bin:/root/bin:$PATH\n")
+			-- Reduce high CPU usage in the Shadow-TLS plugin.
+			if plugin_bin == "shadow-tls" then
+				f:write("export MONOIO_FORCE_LEGACY_DRIVER=1\n")
+			end
 			f:write(plugin_bin .. " $@ &\n")
 			f:write("echo $! > " .. plugin_sh:gsub("%.sh$", ".pid") .. "\n")
 			f:write("wait\n")
